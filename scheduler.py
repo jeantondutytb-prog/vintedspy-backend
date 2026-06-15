@@ -1,8 +1,10 @@
 """
-VintedSpy — Scheduler toutes catégories
-Scrape Vinted par catégorie (newest_first) sans filtre de marque.
+VintedSpy — Scheduler global
+Scrape tout Vinted (newest_first, sans filtre) et s'arrête
+dès qu'on retombe sur des annonces déjà connues.
+Intervalle : 20 minutes par défaut.
 """
-import asyncio, httpx, json, logging, os
+import asyncio, httpx, logging, os
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -16,91 +18,34 @@ logging.basicConfig(
 )
 log = logging.getLogger("scheduler")
 
-BASE = "https://www.vinted.fr"
-UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148"
-INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))
+BASE     = "https://www.vinted.fr"
+UA       = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148"
+INTERVAL = int(os.getenv("SCAN_INTERVAL", "1200"))  # 20 minutes
+MAX_PAGES = 15   # max pages par scan (15 × 96 = ~1 440 annonces max)
+PER_PAGE  = 96   # max autorisé par Vinted
 
-# Catégories Vinted FR — ID : nom
-# On scrape les plus volumineuses pour couvrir tout Vinted
-CATEGORIES = [
-    {"id": 1904, "nom": "Vêtements femme"},
-    {"id": 4,    "nom": "Hauts femme"},
-    {"id": 1,    "nom": "Robes"},
-    {"id": 3,    "nom": "Pantalons femme"},
-    {"id": 2,    "nom": "Jupes"},
-    {"id": 6,    "nom": "Manteaux femme"},
-    {"id": 5,    "nom": "Vestes femme"},
-    {"id": 1232, "nom": "Chaussures femme"},
-    {"id": 1231, "nom": "Sacs"},
-    {"id": 1236, "nom": "Accessoires femme"},
-    {"id": 1229, "nom": "Vêtements homme"},
-    {"id": 586,  "nom": "T-shirts homme"},
-    {"id": 614,  "nom": "Chemises homme"},
-    {"id": 613,  "nom": "Pulls homme"},
-    {"id": 616,  "nom": "Jeans homme"},
-    {"id": 619,  "nom": "Pantalons homme"},
-    {"id": 1223, "nom": "Manteaux homme"},
-    {"id": 1230, "nom": "Chaussures homme"},
-    {"id": 2050, "nom": "Vêtements enfant"},
-    {"id": 1696, "nom": "Électronique"},
-    {"id": 2994, "nom": "Téléphones"},
-    {"id": 3035, "nom": "Montres connectées"},
-    {"id": 3060, "nom": "Appareils photo"},
-    {"id": 2940, "nom": "Jeux vidéo"},
-    {"id": 1476, "nom": "Sport"},
-    {"id": 1480, "nom": "Maison"},
-    {"id": 2,    "nom": "Bijoux"},
-]
 
-async def scraper_categorie(session, categorie, cookies_str, per_page=20):
+def parse_item(item):
     try:
-        params = {
-            "catalog_ids[]": categorie["id"],
-            "order": "newest_first",
-            "per_page": per_page,
-            "page": 1,
+        prix_obj = item.get("price", {})
+        prix = float(prix_obj.get("amount", prix_obj)) if isinstance(prix_obj, dict) else float(prix_obj)
+        if prix <= 0:
+            return None
+        return {
+            "id":         int(item["id"]),
+            "titre":      item.get("title", ""),
+            "marque":     item.get("brand_title", "") or "Sans marque",
+            "taille":     item.get("size_title", ""),
+            "prix":       prix,
+            "nb_favoris": int(item.get("favourite_count", 0)),
+            "url":        BASE + item.get("path", ""),
+            "photo":      (item.get("photo") or {}).get("url", ""),
+            "vendeur":    (item.get("user") or {}).get("login", ""),
+            "categorie":  item.get("catalog_title", ""),
         }
-        r = await session.get(
-            BASE + "/api/v2/catalog/items",
-            params=params,
-            headers={
-                "User-Agent": UA,
-                "Accept": "application/json",
-                "Cookie": cookies_str,
-                "Referer": BASE,
-                "Accept-Language": "fr-FR,fr;q=0.9",
-            },
-            timeout=15,
-        )
-        if r.status_code != 200:
-            log.warning(f"  {categorie['nom']}: HTTP {r.status_code}")
-            return []
-        items = r.json().get("items", [])
-        annonces = []
-        for item in items:
-            try:
-                prix_obj = item.get("price", {})
-                prix = float(prix_obj.get("amount", prix_obj)) if isinstance(prix_obj, dict) else float(prix_obj)
-                if prix <= 0:
-                    continue
-                annonces.append({
-                    "id": int(item["id"]),
-                    "titre": item.get("title", ""),
-                    "marque": item.get("brand_title", "") or "Sans marque",
-                    "taille": item.get("size_title", ""),
-                    "prix": prix,
-                    "nb_favoris": int(item.get("favourite_count", 0)),
-                    "url": BASE + item.get("path", ""),
-                    "photo": (item.get("photo") or {}).get("url", ""),
-                    "vendeur": (item.get("user") or {}).get("login", ""),
-                    "categorie": categorie["nom"],
-                })
-            except:
-                pass
-        return annonces
-    except Exception as e:
-        log.error(f"Erreur {categorie['nom']}: {e}")
-        return []
+    except:
+        return None
+
 
 async def get_cookies():
     async with httpx.AsyncClient(follow_redirects=True, timeout=20) as s:
@@ -108,9 +53,31 @@ async def get_cookies():
         await asyncio.sleep(2)
         return "; ".join(f"{k}={v}" for k, v in dict(s.cookies).items()), s.cookies
 
+
+def ids_already_in_db(ids: list[int]) -> set[int]:
+    """Retourne les IDs déjà présents en base."""
+    from database import get_conn
+    conn, mode = get_conn()
+    if not ids:
+        return set()
+    try:
+        if mode == "pg":
+            placeholders = ",".join([":id" + str(i) for i in range(len(ids))])
+            kwargs = {f"id{i}": v for i, v in enumerate(ids)}
+            rows = conn.run(f"SELECT id FROM annonces WHERE id = ANY(:ids)", ids=ids)
+            return {r[0] for r in rows}
+        else:
+            placeholders = ",".join(["?" for _ in ids])
+            rows = conn.execute(f"SELECT id FROM annonces WHERE id IN ({placeholders})", ids).fetchall()
+            return {r[0] for r in rows}
+    except Exception as e:
+        log.error(f"Erreur ids_already_in_db: {e}")
+        return set()
+
+
 async def run_scan():
     from database import init_db, sauvegarder_annonces, stats_db
-    log.info(f"=== Scan {len(CATEGORIES)} catégories ===")
+    log.info("=== Démarrage scan global Vinted ===")
 
     try:
         cookies_str, jar = await get_cookies()
@@ -118,22 +85,81 @@ async def run_scan():
         log.error(f"Cookies: {e}")
         return
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=20, cookies=jar) as s:
-        toutes = []
-        for cat in CATEGORIES:
-            annonces = await scraper_categorie(s, cat, cookies_str)
-            log.info(f"  {cat['nom']}: {len(annonces)} annonces")
-            toutes.extend(annonces)
-            await asyncio.sleep(2)  # respecter le rate limit
+    toutes = []
+    stop = False
 
-    nouvelles = sauvegarder_annonces(toutes)
-    stats = stats_db()
-    log.info(f"Scan terminé — {nouvelles} nouvelles | DB: {stats['annonces']} annonces total")
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20, cookies=jar) as s:
+        for page in range(1, MAX_PAGES + 1):
+            if stop:
+                break
+
+            try:
+                r = await s.get(
+                    BASE + "/api/v2/catalog/items",
+                    params={
+                        "order":    "newest_first",
+                        "per_page": PER_PAGE,
+                        "page":     page,
+                    },
+                    headers={
+                        "User-Agent":      UA,
+                        "Accept":          "application/json",
+                        "Cookie":          cookies_str,
+                        "Referer":         BASE,
+                        "Accept-Language": "fr-FR,fr;q=0.9",
+                    },
+                    timeout=15,
+                )
+            except Exception as e:
+                log.error(f"Page {page}: {e}")
+                break
+
+            if r.status_code == 429:
+                log.warning("Rate limit Vinted — pause 60s")
+                await asyncio.sleep(60)
+                continue
+            if r.status_code != 200:
+                log.warning(f"Page {page}: HTTP {r.status_code}")
+                break
+
+            items = r.json().get("items", [])
+            if not items:
+                log.info(f"Page {page}: vide, on s'arrête")
+                break
+
+            # Parser les items
+            page_annonces = [a for a in (parse_item(i) for i in items) if a]
+
+            # Vérifier si on retombe sur des IDs déjà connus
+            page_ids = [a["id"] for a in page_annonces]
+            known_ids = ids_already_in_db(page_ids)
+
+            new_on_page = [a for a in page_annonces if a["id"] not in known_ids]
+            toutes.extend(new_on_page)
+
+            ratio_connu = len(known_ids) / max(len(page_ids), 1)
+            log.info(f"Page {page}: {len(items)} items | {len(new_on_page)} nouveaux | {len(known_ids)} déjà connus")
+
+            # Si plus de 50% des items sont déjà connus → on a rattrapé le front
+            if ratio_connu > 0.5:
+                log.info("Majorité d'annonces déjà connues — scan terminé")
+                stop = True
+
+            # Pause entre les pages
+            await asyncio.sleep(2)
+
+    if toutes:
+        nouvelles = sauvegarder_annonces(toutes)
+        stats = stats_db()
+        log.info(f"Scan terminé — {nouvelles} nouvelles annonces | DB: {stats['annonces']} total")
+    else:
+        log.info("Scan terminé — aucune nouvelle annonce")
+
 
 async def main():
     from database import init_db
     init_db()
-    log.info(f"Scheduler démarré — {len(CATEGORIES)} catégories — toutes les {INTERVAL//60} min")
+    log.info(f"Scheduler démarré — scan toutes les {INTERVAL//60} min | max {MAX_PAGES} pages × {PER_PAGE} items")
 
     scan_count = 0
     while True:
@@ -143,7 +169,9 @@ async def main():
             await run_scan()
         except Exception as e:
             log.error(f"Erreur scan #{scan_count}: {e}")
+        log.info(f"Prochain scan dans {INTERVAL//60} min")
         await asyncio.sleep(INTERVAL)
+
 
 if __name__ == "__main__":
     try:
