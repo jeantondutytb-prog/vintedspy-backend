@@ -1,11 +1,11 @@
 """
-VintedSpy — Scheduler
-Scrape toutes les niches configurées toutes les X minutes.
+VintedSpy — Scheduler toutes catégories
+Scrape Vinted par catégorie (newest_first) sans filtre de marque.
 """
-import asyncio, httpx, json, logging
+import asyncio, httpx, json, logging, os
 from datetime import datetime
 from pathlib import Path
-import sys, os
+import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 log_path = Path("/tmp/vintedspy.log") if not (Path.home() / "Downloads").exists() else Path.home() / "Downloads" / "vintedspy.log"
@@ -20,210 +20,60 @@ BASE = "https://www.vinted.fr"
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148"
 INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))
 
-NICHES = [
-    "a.f.vandevorst",
-    "a.p.c.",
-    "a.p.c. x carhartt",
-    "a.p.c. x kanye west",
-    "a.p.c. x nike",
-    "a.p.c. x sacai",
-    "adidas x missoni",
-    "agent provocateur",
-    "agnes b",
-    "alaïa",
-    "amazon",
-    "amina muaddi",
-    "ann demeulemeester",
-    "apple",
-    "arte",
-    "asus",
-    "ba&sh",
-    "bally",
-    "balmain",
-    "balmain x h&m",
-    "balzac paris",
-    "barbour",
-    "belles des pins",
-    "bose",
-    "bottega veneta",
-    "braun",
-    "burberry",
-    "bylima",
-    "calarena",
-    "canon",
-    "carolina herrera",
-    "chanel",
-    "chloé",
-    "christian dior",
-    "christian louboutin",
-    "claris virot",
-    "class roberto cavalli",
-    "coach",
-    "converse x missoni",
-    "coperni",
-    "coros",
-    "courrèges",
-    "crockett & jones",
-    "currentbody",
-    "demellier",
-    "dior",
-    "dji",
-    "dolce & gabbana",
-    "dr dennis gross",
-    "dôen",
-    "elisabetta franchi",
-    "emilio pucci",
-    "epson",
-    "equi théme",
-    "eres",
-    "escada",
-    "etro",
-    "fendi",
-    "freitag",
-    "fujifilm",
-    "garmin",
-    "gerard darel",
-    "giuseppe zanotti",
-    "givenchy",
-    "gopro",
-    "gucci",
-    "gucci x adidas",
-    "gucci x balenciaga",
-    "gucci x dapper dan",
-    "gucci x disney",
-    "gucci x doraemon",
-    "gucci x mlb",
-    "gucci x palace",
-    "harris tweed",
-    "hermès",
-    "hit",
-    "hit air",
-    "insta360",
-    "isabel marant",
-    "isabel marant étoile",
-    "jean paul gaultier",
-    "jil sander",
-    "jimmy choo x mugler",
-    "john galliano",
-    "jordan x the attico",
-    "jérôme dreyfuss",
-    "k-way",
-    "kitchenaid",
-    "kobo",
-    "kujten",
-    "l'agent by agent provocateur",
-    "l'oréal",
-    "lemaire",
-    "livy",
-    "livystone",
-    "loewe",
-    "louis vuitton",
-    "louis vuitton x christian louboutin",
-    "lpg",
-    "lupo barcelona",
-    "m missoni",
-    "magda butrym",
-    "maison margiela",
-    "maje",
-    "manolo blahnik",
-    "maria de la orden",
-    "marni",
-    "max mara",
-    "mcm",
-    "miphai",
-    "missoni",
-    "missoni home",
-    "missoni mare",
-    "miu miu",
-    "mm6 maison margiela",
-    "momcozy",
-    "montbell",
-    "montblanc",
-    "mugler",
-    "mugler x h&m",
-    "mulberry",
-    "mulberry & grand",
-    "mulberry secret",
-    "mulberry street",
-    "mulberry studios",
-    "mulberry x acne studios",
-    "naked wolfe",
-    "new rock",
-    "nikon",
-    "nintendo",
-    "nooance",
-    "octobre editions",
-    "olympus",
-    "onyx",
-    "orciani",
-    "our legacy",
-    "paco rabanne",
-    "palm angels x missoni",
-    "parajumpers",
-    "philips",
-    "pierre balmain",
-    "pioneer",
-    "plein sud",
-    "prada",
-    "proenza schouler",
-    "proenza schouler white label",
-    "puma x balmain",
-    "rat & boa",
-    "red wing shoes",
-    "reebok x ba&sh",
-    "reina olga",
-    "remarkable",
-    "renouard",
-    "revitive",
-    "richard orlinski",
-    "roberta di camerino",
-    "roberto cavalli",
-    "roberto cavalli sport",
-    "roberto cavalli x h&m",
-    "s.t. dupont",
-    "salvatore ferragamo",
-    "samshield",
-    "sandro",
-    "scuffers",
-    "see by chloé",
-    "self-portrait",
-    "shark",
-    "shokz",
-    "silk'n",
-    "sima couture",
-    "soeur",
-    "sommer swim",
-    "sonia rykiel",
-    "spark",
-    "stella mccartney",
-    "supreme x emilio pucci",
-    "suunto",
-    "sézane",
-    "the attico",
-    "the frankie shop",
-    "the north face x gucci",
-    "therabody",
-    "thermomix",
-    "tory burch",
-    "tumi",
-    "vanessa bruno",
-    "versace",
-    "wandler",
-    "zanellato",
-    "zimmermann",
-    "zoé lu",
+# Catégories Vinted FR — ID : nom
+# On scrape les plus volumineuses pour couvrir tout Vinted
+CATEGORIES = [
+    {"id": 1904, "nom": "Vêtements femme"},
+    {"id": 4,    "nom": "Hauts femme"},
+    {"id": 1,    "nom": "Robes"},
+    {"id": 3,    "nom": "Pantalons femme"},
+    {"id": 2,    "nom": "Jupes"},
+    {"id": 6,    "nom": "Manteaux femme"},
+    {"id": 5,    "nom": "Vestes femme"},
+    {"id": 1232, "nom": "Chaussures femme"},
+    {"id": 1231, "nom": "Sacs"},
+    {"id": 1236, "nom": "Accessoires femme"},
+    {"id": 1229, "nom": "Vêtements homme"},
+    {"id": 586,  "nom": "T-shirts homme"},
+    {"id": 614,  "nom": "Chemises homme"},
+    {"id": 613,  "nom": "Pulls homme"},
+    {"id": 616,  "nom": "Jeans homme"},
+    {"id": 619,  "nom": "Pantalons homme"},
+    {"id": 1223, "nom": "Manteaux homme"},
+    {"id": 1230, "nom": "Chaussures homme"},
+    {"id": 2050, "nom": "Vêtements enfant"},
+    {"id": 1696, "nom": "Électronique"},
+    {"id": 2994, "nom": "Téléphones"},
+    {"id": 3035, "nom": "Montres connectées"},
+    {"id": 3060, "nom": "Appareils photo"},
+    {"id": 2940, "nom": "Jeux vidéo"},
+    {"id": 1476, "nom": "Sport"},
+    {"id": 1480, "nom": "Maison"},
+    {"id": 2,    "nom": "Bijoux"},
 ]
 
-async def scraper_niche(session, search, cookies_str):
+async def scraper_categorie(session, categorie, cookies_str, per_page=20):
     try:
+        params = {
+            "catalog_ids[]": categorie["id"],
+            "order": "newest_first",
+            "per_page": per_page,
+            "page": 1,
+        }
         r = await session.get(
             BASE + "/api/v2/catalog/items",
-            params={"search_text": search, "order": "newest_first", "per_page": 20, "page": 1},
-            headers={"User-Agent": UA, "Accept": "application/json",
-                     "Cookie": cookies_str, "Referer": BASE},
+            params=params,
+            headers={
+                "User-Agent": UA,
+                "Accept": "application/json",
+                "Cookie": cookies_str,
+                "Referer": BASE,
+                "Accept-Language": "fr-FR,fr;q=0.9",
+            },
             timeout=15,
         )
         if r.status_code != 200:
+            log.warning(f"  {categorie['nom']}: HTTP {r.status_code}")
             return []
         items = r.json().get("items", [])
         annonces = []
@@ -231,22 +81,25 @@ async def scraper_niche(session, search, cookies_str):
             try:
                 prix_obj = item.get("price", {})
                 prix = float(prix_obj.get("amount", prix_obj)) if isinstance(prix_obj, dict) else float(prix_obj)
+                if prix <= 0:
+                    continue
                 annonces.append({
                     "id": int(item["id"]),
                     "titre": item.get("title", ""),
-                    "marque": item.get("brand_title", ""),
+                    "marque": item.get("brand_title", "") or "Sans marque",
                     "taille": item.get("size_title", ""),
                     "prix": prix,
                     "nb_favoris": int(item.get("favourite_count", 0)),
                     "url": BASE + item.get("path", ""),
                     "photo": (item.get("photo") or {}).get("url", ""),
                     "vendeur": (item.get("user") or {}).get("login", ""),
+                    "categorie": categorie["nom"],
                 })
             except:
                 pass
         return annonces
     except Exception as e:
-        log.error(f"Erreur scrape '{search}': {e}")
+        log.error(f"Erreur {categorie['nom']}: {e}")
         return []
 
 async def get_cookies():
@@ -256,8 +109,8 @@ async def get_cookies():
         return "; ".join(f"{k}={v}" for k, v in dict(s.cookies).items()), s.cookies
 
 async def run_scan():
-    from database import init_db, sauvegarder_annonces, get_opportunites, stats_db
-    log.info(f"=== Scan de {len(NICHES)} niches ===")
+    from database import init_db, sauvegarder_annonces, stats_db
+    log.info(f"=== Scan {len(CATEGORIES)} catégories ===")
 
     try:
         cookies_str, jar = await get_cookies()
@@ -267,21 +120,20 @@ async def run_scan():
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=20, cookies=jar) as s:
         toutes = []
-        for niche in NICHES:
-            annonces = await scraper_niche(s, niche, cookies_str)
-            if annonces:
-                log.info(f"  '{niche}': {len(annonces)} annonces")
+        for cat in CATEGORIES:
+            annonces = await scraper_categorie(s, cat, cookies_str)
+            log.info(f"  {cat['nom']}: {len(annonces)} annonces")
             toutes.extend(annonces)
-            await asyncio.sleep(2)
+            await asyncio.sleep(2)  # respecter le rate limit
 
     nouvelles = sauvegarder_annonces(toutes)
     stats = stats_db()
-    log.info(f"Scan terminé — {nouvelles} nouvelles | DB: {stats['annonces']} annonces")
+    log.info(f"Scan terminé — {nouvelles} nouvelles | DB: {stats['annonces']} annonces total")
 
 async def main():
     from database import init_db
     init_db()
-    log.info(f"Scheduler démarré — {len(NICHES)} niches — scan toutes les {INTERVAL//60} min")
+    log.info(f"Scheduler démarré — {len(CATEGORIES)} catégories — toutes les {INTERVAL//60} min")
 
     scan_count = 0
     while True:
