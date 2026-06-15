@@ -60,9 +60,12 @@ def init_db():
         conn.run("""CREATE TABLE IF NOT EXISTS niches (
             id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, nom TEXT,
             marque TEXT, taille TEXT, score_min INTEGER, prix_min REAL,
-            created_le TEXT)""")
+            recherche TEXT, created_le TEXT)""")
         try:
             conn.run("CREATE INDEX IF NOT EXISTS idx_niches_user ON niches(user_id)")
+        except: pass
+        try:
+            conn.run("ALTER TABLE niches ADD COLUMN IF NOT EXISTS recherche TEXT")
         except: pass
         conn.run("""CREATE TABLE IF NOT EXISTS surveillance (
             id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, annonce_id BIGINT NOT NULL,
@@ -82,7 +85,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_marque_taille ON prix_history(marque, taille);
             CREATE TABLE IF NOT EXISTS niches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, nom TEXT,
-                marque TEXT, taille TEXT, score_min INTEGER, prix_min REAL, created_le TEXT);
+                marque TEXT, taille TEXT, score_min INTEGER, prix_min REAL, recherche TEXT, created_le TEXT);
             CREATE INDEX IF NOT EXISTS idx_niches_user ON niches(user_id);
             CREATE TABLE IF NOT EXISTS surveillance (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, annonce_id INTEGER NOT NULL,
@@ -92,6 +95,10 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_surv_user ON surveillance(user_id);
         """)
         conn.commit()
+        try:
+            conn.execute("ALTER TABLE niches ADD COLUMN recherche TEXT")
+            conn.commit()
+        except: pass
     log.info(f"DB initialisée ({mode})")
 
 def sauvegarder_annonces(annonces: list[dict]) -> int:
@@ -276,17 +283,17 @@ def stats_db() -> dict:
 def list_user_niches(user_id: str) -> list[dict]:
     conn, mode = get_conn()
     if mode == "pg":
-        rows = conn.run("SELECT id,nom,marque,taille,score_min,prix_min,created_le FROM niches WHERE user_id=:u ORDER BY id DESC", u=user_id)
-        cols = ["id","nom","marque","taille","score_min","prix_min","created_le"]
+        rows = conn.run("SELECT id,nom,marque,taille,score_min,prix_min,recherche,created_le FROM niches WHERE user_id=:u ORDER BY id DESC", u=user_id)
+        cols = ["id","nom","marque","taille","score_min","prix_min","recherche","created_le"]
         result = [dict(zip(cols, r)) for r in rows]
     else:
-        result = [dict(r) for r in conn.execute("SELECT id,nom,marque,taille,score_min,prix_min,created_le FROM niches WHERE user_id=? ORDER BY id DESC", (user_id,)).fetchall()]
+        result = [dict(r) for r in conn.execute("SELECT id,nom,marque,taille,score_min,prix_min,recherche,created_le FROM niches WHERE user_id=? ORDER BY id DESC", (user_id,)).fetchall()]
 
     for n in result:
-        n["nb_annonces"] = _count_matching(conn, mode, n["marque"], n["taille"], n["prix_min"])
+        n["nb_annonces"] = _count_matching(conn, mode, n["marque"], n["taille"], n["prix_min"], n.get("recherche"))
     return result
 
-def _count_matching(conn, mode, marque, taille, prix_min):
+def _count_matching(conn, mode, marque, taille, prix_min, recherche=None):
     conditions, params = [], []
     if marque:
         conditions.append("LOWER(marque) = " + (":marque" if mode == "pg" else "?"))
@@ -297,34 +304,45 @@ def _count_matching(conn, mode, marque, taille, prix_min):
     if prix_min is not None:
         conditions.append("prix >= " + (":prix_min" if mode == "pg" else "?"))
         params.append(prix_min)
+    if recherche:
+        ph = ":recherche" if mode == "pg" else "?"
+        conditions.append(f"(LOWER(titre) LIKE {ph} OR LOWER(marque) LIKE {ph})" if mode != "pg"
+                           else f"(LOWER(titre) LIKE {ph} OR LOWER(marque) LIKE :recherche2)")
+        if mode == "pg":
+            params.append(f"%{recherche.lower()}%")
+            params.append(f"%{recherche.lower()}%")
+        else:
+            params.append(f"%{recherche.lower()}%")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     q = f"SELECT COUNT(*) FROM annonces {where}"
     if mode == "pg":
         kwargs = {}
-        names = ["marque", "taille", "prix_min"]
         i = 0
         if marque: kwargs["marque"] = params[i]; i += 1
         if taille: kwargs["taille"] = params[i]; i += 1
         if prix_min is not None: kwargs["prix_min"] = params[i]; i += 1
+        if recherche:
+            kwargs["recherche"] = params[i]; i += 1
+            kwargs["recherche2"] = params[i]; i += 1
         return conn.run(q, **kwargs)[0][0]
     return conn.execute(q, params).fetchone()[0]
 
 def create_user_niche(user_id: str, nom: str, marque: str = None, taille: str = None,
-                       score_min: int = None, prix_min: float = None) -> dict:
+                       score_min: int = None, prix_min: float = None, recherche: str = None) -> dict:
     conn, mode = get_conn()
     now = datetime.now().isoformat()
     if mode == "pg":
-        row = conn.run("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,created_le)
-            VALUES (:u,:nom,:marque,:taille,:score_min,:prix_min,:now) RETURNING id""",
-            u=user_id, nom=nom, marque=marque, taille=taille, score_min=score_min, prix_min=prix_min, now=now)
+        row = conn.run("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,recherche,created_le)
+            VALUES (:u,:nom,:marque,:taille,:score_min,:prix_min,:recherche,:now) RETURNING id""",
+            u=user_id, nom=nom, marque=marque, taille=taille, score_min=score_min, prix_min=prix_min, recherche=recherche, now=now)
         new_id = row[0][0]
     else:
-        conn.execute("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,created_le)
-            VALUES (?,?,?,?,?,?,?)""", (user_id, nom, marque, taille, score_min, prix_min, now))
+        conn.execute("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,recherche,created_le)
+            VALUES (?,?,?,?,?,?,?,?)""", (user_id, nom, marque, taille, score_min, prix_min, recherche, now))
         conn.commit()
         new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     return {"id": new_id, "nom": nom, "marque": marque, "taille": taille,
-            "score_min": score_min, "prix_min": prix_min, "created_le": now, "nb_annonces": 0}
+            "score_min": score_min, "prix_min": prix_min, "recherche": recherche, "created_le": now, "nb_annonces": 0}
 
 def delete_user_niche(user_id: str, niche_id: int) -> bool:
     conn, mode = get_conn()

@@ -136,6 +136,7 @@ async def niches_create(payload: dict, user: dict = Depends(get_current_user)):
             user["id"], nom,
             marque=payload.get("marque"), taille=payload.get("taille"),
             score_min=payload.get("score_min"), prix_min=payload.get("prix_min"),
+            recherche=payload.get("recherche"),
         )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
