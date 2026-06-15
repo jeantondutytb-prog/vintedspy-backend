@@ -112,13 +112,14 @@ def feed(
 
 @app.get("/vinted/brand/{brand_id}")
 async def vinted_brand(brand_id: int):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    }
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(
-                f"https://www.vinted.fr/api/v2/brands/{brand_id}",
-                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-                timeout=10,
-            )
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
+            await client.get("https://www.vinted.fr/")
+            r = await client.get(f"https://www.vinted.fr/api/v2/brands/{brand_id}", timeout=10)
         if r.status_code != 200:
             return JSONResponse(status_code=502, content={"error": "vinted_unreachable"})
         data = r.json()
