@@ -147,22 +147,18 @@ def get_opportunites(limit: int = 20) -> list[dict]:
             resultats.append(a)
     return sorted(resultats, key=lambda x: x["score"], reverse=True)[:limit]
 
-def get_feed_annonces(offset: int = 0, limit: int = 40, marque: str = None,
-                       prix_min: float = None, prix_max: float = None,
-                       search: str = None, order: str = "recent") -> list[dict]:
-    conn, mode = get_conn()
-    order_clause = {
-        "recent":    "scraped_le DESC",
-        "prix_asc":  "prix ASC",
-        "prix_desc": "prix DESC",
-        "favs":      "nb_favoris DESC",
-    }.get(order, "scraped_le DESC")
-
+def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, order_clause, limit, offset):
+    cols = ["id","titre","marque","taille","prix","nb_favoris","url","photo","vendeur","scraped_le"]
     if mode == "pg":
         conditions, kwargs = [], {}
-        if marque:
-            conditions.append("LOWER(marque) LIKE :marque")
-            kwargs["marque"] = f"%{marque.lower()}%"
+        if marques:
+            placeholders = ",".join(f":marque{i}" for i in range(len(marques)))
+            conditions.append(f"LOWER(marque) IN ({placeholders})")
+            for i, m in enumerate(marques):
+                kwargs[f"marque{i}"] = m.lower()
+        if taille:
+            conditions.append("LOWER(taille) = :taille")
+            kwargs["taille"] = taille.lower()
         if prix_min is not None:
             conditions.append("prix >= :prix_min")
             kwargs["prix_min"] = prix_min
@@ -174,16 +170,19 @@ def get_feed_annonces(offset: int = 0, limit: int = 40, marque: str = None,
             kwargs["search"] = f"%{search.lower()}%"
             kwargs["search2"] = f"%{search.lower()}%"
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        q = f"SELECT id,titre,marque,taille,prix,nb_favoris,url,photo,vendeur,scraped_le FROM annonces {where} ORDER BY {order_clause} LIMIT :limit OFFSET :offset"
+        q = f"SELECT {','.join(cols)} FROM annonces {where} ORDER BY {order_clause} LIMIT :limit OFFSET :offset"
         kwargs.update({"limit": limit, "offset": offset})
         rows = conn.run(q, **kwargs)
-        cols = ["id","titre","marque","taille","prix","nb_favoris","url","photo","vendeur","scraped_le"]
         return [dict(zip(cols, r)) for r in rows]
     else:
         conditions, params = [], []
-        if marque:
-            conditions.append("LOWER(marque) LIKE ?")
-            params.append(f"%{marque.lower()}%")
+        if marques:
+            placeholders = ",".join("?" for _ in marques)
+            conditions.append(f"LOWER(marque) IN ({placeholders})")
+            params.extend(m.lower() for m in marques)
+        if taille:
+            conditions.append("LOWER(taille) = ?")
+            params.append(taille.lower())
         if prix_min is not None:
             conditions.append("prix >= ?")
             params.append(prix_min)
@@ -194,10 +193,43 @@ def get_feed_annonces(offset: int = 0, limit: int = 40, marque: str = None,
             conditions.append("(LOWER(titre) LIKE ? OR LOWER(marque) LIKE ?)")
             params.extend([f"%{search.lower()}%", f"%{search.lower()}%"])
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        q = f"SELECT * FROM annonces {where} ORDER BY {order_clause} LIMIT ? OFFSET ?"
+        q = f"SELECT {','.join(cols)} FROM annonces {where} ORDER BY {order_clause} LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         rows = conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_feed_annonces(offset: int = 0, limit: int = 40, marque: str = None,
+                       taille: str = None, score_min: int = None,
+                       prix_min: float = None, prix_max: float = None,
+                       search: str = None, order: str = "recent") -> list[dict]:
+    conn, mode = get_conn()
+    marques = [m.strip().lower() for m in marque.split(",") if m.strip()] if marque else None
+
+    # score_min / order=score require computing the score per row (median lookup),
+    # so fetch a larger candidate window and rank/filter in Python.
+    if score_min is not None or order == "score":
+        candidates = _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search,
+                                       "scraped_le DESC", min(offset + limit * 5, 200), 0)
+        scored = []
+        for a in candidates:
+            median = get_median_prix(a["marque"], a["taille"])
+            a["prix_median"] = median
+            a["score"] = scorer_annonce(a, median)
+            if score_min is None or a["score"] >= score_min:
+                scored.append(a)
+        if order == "score":
+            scored.sort(key=lambda a: a["score"], reverse=True)
+        return scored[offset:offset + limit]
+
+    order_clause = {
+        "recent":    "scraped_le DESC",
+        "prix_asc":  "prix ASC",
+        "prix_desc": "prix DESC",
+        "favs":      "nb_favoris DESC",
+    }.get(order, "scraped_le DESC")
+
+    return _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, order_clause, limit, offset)
 
 
 def stats_db() -> dict:
