@@ -41,6 +41,14 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
         raise HTTPException(status_code=401, detail="Session invalide ou expirée")
     return r.json()
 
+@app.on_event("startup")
+def on_startup():
+    try:
+        from database import init_db
+        init_db()
+    except Exception as e:
+        print(f"init_db failed: {e}")
+
 @app.get("/")
 def root():
     return {"status": "ok", "app": "VintedSpy API"}
@@ -105,6 +113,73 @@ def feed(
 @app.get("/me")
 async def me(user: dict = Depends(get_current_user)):
     return {"id": user.get("id"), "email": user.get("email")}
+
+
+# ---- NICHES ----
+
+@app.get("/niches")
+async def niches_list(user: dict = Depends(get_current_user)):
+    try:
+        from database import list_user_niches
+        return list_user_niches(user["id"])
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/niches")
+async def niches_create(payload: dict, user: dict = Depends(get_current_user)):
+    try:
+        from database import create_user_niche
+        nom = (payload.get("nom") or "").strip()
+        if not nom:
+            return JSONResponse(status_code=400, content={"error": "Nom requis"})
+        return create_user_niche(
+            user["id"], nom,
+            marque=payload.get("marque"), taille=payload.get("taille"),
+            score_min=payload.get("score_min"), prix_min=payload.get("prix_min"),
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.delete("/niches/{niche_id}")
+async def niches_delete(niche_id: int, user: dict = Depends(get_current_user)):
+    try:
+        from database import delete_user_niche
+        ok = delete_user_niche(user["id"], niche_id)
+        if not ok:
+            return JSONResponse(status_code=404, content={"error": "Niche introuvable"})
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---- SURVEILLANCE ----
+
+@app.get("/surveillance")
+async def surveillance_list(user: dict = Depends(get_current_user)):
+    try:
+        from database import refresh_surveillance
+        return refresh_surveillance(user["id"])
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/surveillance")
+async def surveillance_add(payload: dict, user: dict = Depends(get_current_user)):
+    try:
+        from database import add_surveillance
+        if not payload.get("id"):
+            return JSONResponse(status_code=400, content={"error": "id requis"})
+        return add_surveillance(user["id"], payload)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.delete("/surveillance/{annonce_id}")
+async def surveillance_remove(annonce_id: int, user: dict = Depends(get_current_user)):
+    try:
+        from database import remove_surveillance
+        remove_surveillance(user["id"], annonce_id)
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/ping")

@@ -57,6 +57,21 @@ def init_db():
         try:
             conn.run("CREATE INDEX IF NOT EXISTS idx_marque_taille ON prix_history(marque, taille)")
         except: pass
+        conn.run("""CREATE TABLE IF NOT EXISTS niches (
+            id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, nom TEXT,
+            marque TEXT, taille TEXT, score_min INTEGER, prix_min REAL,
+            created_le TEXT)""")
+        try:
+            conn.run("CREATE INDEX IF NOT EXISTS idx_niches_user ON niches(user_id)")
+        except: pass
+        conn.run("""CREATE TABLE IF NOT EXISTS surveillance (
+            id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, annonce_id BIGINT NOT NULL,
+            titre TEXT, marque TEXT, taille TEXT, prix REAL, photo TEXT, url TEXT,
+            added_le TEXT, last_seen_le TEXT, vendu BOOLEAN DEFAULT FALSE,
+            UNIQUE(user_id, annonce_id))""")
+        try:
+            conn.run("CREATE INDEX IF NOT EXISTS idx_surv_user ON surveillance(user_id)")
+        except: pass
     else:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS annonces (
@@ -65,6 +80,16 @@ def init_db():
             CREATE TABLE IF NOT EXISTS prix_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, marque TEXT, taille TEXT, prix REAL, scraped_le TEXT);
             CREATE INDEX IF NOT EXISTS idx_marque_taille ON prix_history(marque, taille);
+            CREATE TABLE IF NOT EXISTS niches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, nom TEXT,
+                marque TEXT, taille TEXT, score_min INTEGER, prix_min REAL, created_le TEXT);
+            CREATE INDEX IF NOT EXISTS idx_niches_user ON niches(user_id);
+            CREATE TABLE IF NOT EXISTS surveillance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, annonce_id INTEGER NOT NULL,
+                titre TEXT, marque TEXT, taille TEXT, prix REAL, photo TEXT, url TEXT,
+                added_le TEXT, last_seen_le TEXT, vendu INTEGER DEFAULT 0,
+                UNIQUE(user_id, annonce_id));
+            CREATE INDEX IF NOT EXISTS idx_surv_user ON surveillance(user_id);
         """)
         conn.commit()
     log.info(f"DB initialisée ({mode})")
@@ -244,3 +269,133 @@ def stats_db() -> dict:
         nb_p = conn.execute("SELECT COUNT(*) FROM prix_history").fetchone()[0]
         niches = [dict(r) for r in conn.execute("SELECT marque, COUNT(*) as nb, AVG(prix) as prix_moy, MIN(prix) as prix_min, MAX(prix) as prix_max FROM prix_history GROUP BY marque ORDER BY nb DESC").fetchall()]
     return {"annonces": nb_a, "prix_history": nb_p, "niches": niches}
+
+
+# ---- USER NICHES (saved feed filters) ----
+
+def list_user_niches(user_id: str) -> list[dict]:
+    conn, mode = get_conn()
+    if mode == "pg":
+        rows = conn.run("SELECT id,nom,marque,taille,score_min,prix_min,created_le FROM niches WHERE user_id=:u ORDER BY id DESC", u=user_id)
+        cols = ["id","nom","marque","taille","score_min","prix_min","created_le"]
+        result = [dict(zip(cols, r)) for r in rows]
+    else:
+        result = [dict(r) for r in conn.execute("SELECT id,nom,marque,taille,score_min,prix_min,created_le FROM niches WHERE user_id=? ORDER BY id DESC", (user_id,)).fetchall()]
+
+    for n in result:
+        n["nb_annonces"] = _count_matching(conn, mode, n["marque"], n["taille"], n["prix_min"])
+    return result
+
+def _count_matching(conn, mode, marque, taille, prix_min):
+    conditions, params = [], []
+    if marque:
+        conditions.append("LOWER(marque) = " + (":marque" if mode == "pg" else "?"))
+        params.append(marque.lower())
+    if taille:
+        conditions.append("LOWER(taille) = " + (":taille" if mode == "pg" else "?"))
+        params.append(taille.lower())
+    if prix_min is not None:
+        conditions.append("prix >= " + (":prix_min" if mode == "pg" else "?"))
+        params.append(prix_min)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    q = f"SELECT COUNT(*) FROM annonces {where}"
+    if mode == "pg":
+        kwargs = {}
+        names = ["marque", "taille", "prix_min"]
+        i = 0
+        if marque: kwargs["marque"] = params[i]; i += 1
+        if taille: kwargs["taille"] = params[i]; i += 1
+        if prix_min is not None: kwargs["prix_min"] = params[i]; i += 1
+        return conn.run(q, **kwargs)[0][0]
+    return conn.execute(q, params).fetchone()[0]
+
+def create_user_niche(user_id: str, nom: str, marque: str = None, taille: str = None,
+                       score_min: int = None, prix_min: float = None) -> dict:
+    conn, mode = get_conn()
+    now = datetime.now().isoformat()
+    if mode == "pg":
+        row = conn.run("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,created_le)
+            VALUES (:u,:nom,:marque,:taille,:score_min,:prix_min,:now) RETURNING id""",
+            u=user_id, nom=nom, marque=marque, taille=taille, score_min=score_min, prix_min=prix_min, now=now)
+        new_id = row[0][0]
+    else:
+        conn.execute("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,created_le)
+            VALUES (?,?,?,?,?,?,?)""", (user_id, nom, marque, taille, score_min, prix_min, now))
+        conn.commit()
+        new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return {"id": new_id, "nom": nom, "marque": marque, "taille": taille,
+            "score_min": score_min, "prix_min": prix_min, "created_le": now, "nb_annonces": 0}
+
+def delete_user_niche(user_id: str, niche_id: int) -> bool:
+    conn, mode = get_conn()
+    if mode == "pg":
+        conn.run("DELETE FROM niches WHERE id=:id AND user_id=:u", id=niche_id, u=user_id)
+        return conn.row_count > 0
+    conn.execute("DELETE FROM niches WHERE id=? AND user_id=?", (niche_id, user_id))
+    conn.commit()
+    return conn.execute("SELECT changes()").fetchone()[0] > 0
+
+
+# ---- SURVEILLANCE (watchlist) ----
+
+def list_surveillance(user_id: str) -> list[dict]:
+    conn, mode = get_conn()
+    cols = ["id","annonce_id","titre","marque","taille","prix","photo","url","added_le","last_seen_le","vendu"]
+    if mode == "pg":
+        rows = conn.run(f"SELECT {','.join(cols)} FROM surveillance WHERE user_id=:u ORDER BY id DESC", u=user_id)
+        return [dict(zip(cols, r)) for r in rows]
+    return [dict(r) for r in conn.execute(f"SELECT {','.join(cols)} FROM surveillance WHERE user_id=? ORDER BY id DESC", (user_id,)).fetchall()]
+
+def add_surveillance(user_id: str, annonce: dict) -> dict:
+    conn, mode = get_conn()
+    now = datetime.now().isoformat()
+    if mode == "pg":
+        conn.run("""INSERT INTO surveillance (user_id,annonce_id,titre,marque,taille,prix,photo,url,added_le,last_seen_le,vendu)
+            VALUES (:u,:aid,:titre,:marque,:taille,:prix,:photo,:url,:now,:now,FALSE)
+            ON CONFLICT (user_id, annonce_id) DO NOTHING""",
+            u=user_id, aid=annonce["id"], titre=annonce.get("titre"), marque=annonce.get("marque"),
+            taille=annonce.get("taille"), prix=annonce.get("prix"), photo=annonce.get("photo"),
+            url=annonce.get("url"), now=now)
+    else:
+        conn.execute("""INSERT OR IGNORE INTO surveillance (user_id,annonce_id,titre,marque,taille,prix,photo,url,added_le,last_seen_le,vendu)
+            VALUES (?,?,?,?,?,?,?,?,?,?,0)""",
+            (user_id, annonce["id"], annonce.get("titre"), annonce.get("marque"), annonce.get("taille"),
+             annonce.get("prix"), annonce.get("photo"), annonce.get("url"), now, now))
+        conn.commit()
+    return {"ok": True}
+
+def remove_surveillance(user_id: str, annonce_id: int) -> bool:
+    conn, mode = get_conn()
+    if mode == "pg":
+        conn.run("DELETE FROM surveillance WHERE user_id=:u AND annonce_id=:aid", u=user_id, aid=annonce_id)
+        return conn.row_count > 0
+    conn.execute("DELETE FROM surveillance WHERE user_id=? AND annonce_id=?", (user_id, annonce_id))
+    conn.commit()
+    return conn.execute("SELECT changes()").fetchone()[0] > 0
+
+def refresh_surveillance(user_id: str) -> list[dict]:
+    """Update last_seen_le/vendu/prix for watched items by checking if they're still in `annonces`."""
+    conn, mode = get_conn()
+    items = list_surveillance(user_id)
+    now = datetime.now().isoformat()
+    for it in items:
+        if mode == "pg":
+            row = conn.run("SELECT prix FROM annonces WHERE id=:id", id=it["annonce_id"])
+            if row:
+                conn.run("UPDATE surveillance SET prix=:p, last_seen_le=:now, vendu=FALSE WHERE user_id=:u AND annonce_id=:aid",
+                    p=row[0][0], now=now, u=user_id, aid=it["annonce_id"])
+                it["prix"], it["last_seen_le"], it["vendu"] = row[0][0], now, False
+            else:
+                conn.run("UPDATE surveillance SET vendu=TRUE WHERE user_id=:u AND annonce_id=:aid", u=user_id, aid=it["annonce_id"])
+                it["vendu"] = True
+        else:
+            row = conn.execute("SELECT prix FROM annonces WHERE id=?", (it["annonce_id"],)).fetchone()
+            if row:
+                conn.execute("UPDATE surveillance SET prix=?, last_seen_le=?, vendu=0 WHERE user_id=? AND annonce_id=?",
+                    (row[0], now, user_id, it["annonce_id"]))
+                it["prix"], it["last_seen_le"], it["vendu"] = row[0], now, False
+            else:
+                conn.execute("UPDATE surveillance SET vendu=1 WHERE user_id=? AND annonce_id=?", (user_id, it["annonce_id"]))
+                it["vendu"] = True
+            conn.commit()
+    return items
