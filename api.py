@@ -54,6 +54,12 @@ async def get_current_user(authorization: str = Header(None), require_sub: bool 
 async def get_subscribed_user(authorization: str = Header(None)) -> dict:
     return await get_current_user(authorization=authorization, require_sub=True)
 
+def _is_subscribed(user: dict) -> bool:
+    from database import is_subscribed
+    email = user.get("email", "")
+    admin_emails = {e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+    return email in admin_emails or is_subscribed(email)
+
 @app.on_event("startup")
 def on_startup():
     try:
@@ -84,7 +90,7 @@ def stats():
 
 
 @app.get("/feed")
-def feed(
+async def feed(
     offset: int = Query(0, ge=0),
     limit: int = Query(40, ge=1, le=100),
     marque: str = Query(None),
@@ -94,13 +100,15 @@ def feed(
     prix_max: float = Query(None),
     search: str = Query(None),
     order: str = Query("recent"),
+    user: dict = Depends(get_current_user),
 ):
     try:
         from database import get_feed_annonces
+        since_hours = None if _is_subscribed(user) else 24
         return get_feed_annonces(offset=offset, limit=limit, marque=marque,
                                   taille=taille, score_min=score_min,
                                   prix_min=prix_min, prix_max=prix_max,
-                                  search=search, order=order)
+                                  search=search, order=order, since_hours=since_hours)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -125,11 +133,10 @@ async def vinted_brand(brand_id: int):
 
 @app.get("/me")
 async def me(user: dict = Depends(get_current_user)):
-    from database import is_subscribed
     email = user.get("email", "")
-    admin_emails = {e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
-    subscribed = email in admin_emails or is_subscribed(email)
-    return {"id": user.get("id"), "email": email, "subscribed": subscribed}
+    subscribed = _is_subscribed(user)
+    plan = "pro" if subscribed else "free"
+    return {"id": user.get("id"), "email": email, "subscribed": subscribed, "plan": plan}
 
 
 @app.post("/stripe/webhook")
@@ -225,20 +232,26 @@ async def stripe_webhook(request: Request):
 # ---- NICHES ----
 
 @app.get("/niches")
-async def niches_list(user: dict = Depends(get_subscribed_user)):
+async def niches_list(user: dict = Depends(get_current_user)):
     try:
         from database import list_user_niches
-        return list_user_niches(user["id"])
+        niches = list_user_niches(user["id"])
+        subscribed = _is_subscribed(user)
+        return {"niches": niches, "subscribed": subscribed, "free_limit": 1}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/niches")
-async def niches_create(payload: dict, user: dict = Depends(get_subscribed_user)):
+async def niches_create(payload: dict, user: dict = Depends(get_current_user)):
     try:
-        from database import create_user_niche
+        from database import create_user_niche, list_user_niches
         nom = (payload.get("nom") or "").strip()
         if not nom:
             return JSONResponse(status_code=400, content={"error": "Nom requis"})
+        if not _is_subscribed(user):
+            existing = list_user_niches(user["id"])
+            if len(existing) >= 1:
+                return JSONResponse(status_code=403, content={"error": "free_limit"})
         return create_user_niche(
             user["id"], nom,
             marque=payload.get("marque"), taille=payload.get("taille"),
@@ -249,7 +262,7 @@ async def niches_create(payload: dict, user: dict = Depends(get_subscribed_user)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/niches/{niche_id}/items")
-async def niches_items(niche_id: int, limit: int = Query(100, ge=1, le=500), user: dict = Depends(get_subscribed_user)):
+async def niches_items(niche_id: int, limit: int = Query(100, ge=1, le=500), user: dict = Depends(get_current_user)):
     try:
         from database import get_niche_items
         return get_niche_items(niche_id, limit=limit)
@@ -257,7 +270,7 @@ async def niches_items(niche_id: int, limit: int = Query(100, ge=1, le=500), use
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.delete("/niches/{niche_id}")
-async def niches_delete(niche_id: int, user: dict = Depends(get_subscribed_user)):
+async def niches_delete(niche_id: int, user: dict = Depends(get_current_user)):
     try:
         from database import delete_user_niche
         ok = delete_user_niche(user["id"], niche_id)
