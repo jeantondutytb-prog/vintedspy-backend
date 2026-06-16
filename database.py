@@ -75,6 +75,17 @@ def init_db():
         try:
             conn.run("CREATE INDEX IF NOT EXISTS idx_surv_user ON surveillance(user_id)")
         except: pass
+        conn.run("""CREATE TABLE IF NOT EXISTS subscriptions (
+            id BIGSERIAL PRIMARY KEY,
+            user_email TEXT NOT NULL UNIQUE,
+            stripe_customer_id TEXT,
+            stripe_subscription_id TEXT,
+            status TEXT NOT NULL DEFAULT 'inactive',
+            current_period_end TEXT,
+            updated_le TEXT)""")
+        try:
+            conn.run("CREATE INDEX IF NOT EXISTS idx_sub_email ON subscriptions(user_email)")
+        except: pass
     else:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS annonces (
@@ -97,6 +108,18 @@ def init_db():
         conn.commit()
         try:
             conn.execute("ALTER TABLE niches ADD COLUMN recherche TEXT")
+            conn.commit()
+        except: pass
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_email TEXT NOT NULL UNIQUE,
+                stripe_customer_id TEXT,
+                stripe_subscription_id TEXT,
+                status TEXT NOT NULL DEFAULT 'inactive',
+                current_period_end TEXT,
+                updated_le TEXT)""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sub_email ON subscriptions(user_email)")
             conn.commit()
         except: pass
     log.info(f"DB initialisée ({mode})")
@@ -417,3 +440,51 @@ def refresh_surveillance(user_id: str) -> list[dict]:
                 it["vendu"] = True
             conn.commit()
     return items
+
+
+# ---- SUBSCRIPTIONS ----
+
+def get_subscription(user_email: str) -> dict | None:
+    conn, mode = get_conn()
+    if mode == "pg":
+        rows = conn.run("SELECT user_email,stripe_customer_id,stripe_subscription_id,status,current_period_end FROM subscriptions WHERE user_email=:e", e=user_email)
+        if not rows:
+            return None
+        cols = ["user_email","stripe_customer_id","stripe_subscription_id","status","current_period_end"]
+        return dict(zip(cols, rows[0]))
+    row = conn.execute("SELECT user_email,stripe_customer_id,stripe_subscription_id,status,current_period_end FROM subscriptions WHERE user_email=?", (user_email,)).fetchone()
+    return dict(row) if row else None
+
+def is_subscribed(user_email: str) -> bool:
+    sub = get_subscription(user_email)
+    if not sub:
+        return False
+    return sub["status"] == "active"
+
+def upsert_subscription(user_email: str, stripe_customer_id: str = None,
+                         stripe_subscription_id: str = None, status: str = "active",
+                         current_period_end: str = None):
+    conn, mode = get_conn()
+    now = datetime.now().isoformat()
+    if mode == "pg":
+        conn.run("""INSERT INTO subscriptions (user_email,stripe_customer_id,stripe_subscription_id,status,current_period_end,updated_le)
+            VALUES (:e,:cid,:sid,:status,:cpe,:now)
+            ON CONFLICT (user_email) DO UPDATE SET
+                stripe_customer_id=EXCLUDED.stripe_customer_id,
+                stripe_subscription_id=EXCLUDED.stripe_subscription_id,
+                status=EXCLUDED.status,
+                current_period_end=EXCLUDED.current_period_end,
+                updated_le=EXCLUDED.updated_le""",
+            e=user_email, cid=stripe_customer_id, sid=stripe_subscription_id,
+            status=status, cpe=current_period_end, now=now)
+    else:
+        conn.execute("""INSERT INTO subscriptions (user_email,stripe_customer_id,stripe_subscription_id,status,current_period_end,updated_le)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(user_email) DO UPDATE SET
+                stripe_customer_id=excluded.stripe_customer_id,
+                stripe_subscription_id=excluded.stripe_subscription_id,
+                status=excluded.status,
+                current_period_end=excluded.current_period_end,
+                updated_le=excluded.updated_le""",
+            (user_email, stripe_customer_id, stripe_subscription_id, status, current_period_end, now))
+        conn.commit()

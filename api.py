@@ -1,11 +1,13 @@
 """
 VintedSpy — API FastAPI
 """
-from fastapi import FastAPI, Query, Header, HTTPException, Depends
+from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import sys, httpx
+import sys, httpx, os, hmac, hashlib
 from pathlib import Path
+
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 sys.path.insert(0, str(Path(__file__).parent))
 
 app = FastAPI(title="VintedSpy API", version="1.0.0")
@@ -27,7 +29,7 @@ app.add_middleware(
 SUPABASE_URL = "https://apwedqsklyzroeyrokqb.supabase.co"
 SUPABASE_ANON_KEY = "sb_publishable_ExNINsgU98WsaiqBeW0x-A_HXqQFLz1"
 
-async def get_current_user(authorization: str = Header(None)) -> dict:
+async def get_current_user(authorization: str = Header(None), require_sub: bool = False) -> dict:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Authentification requise")
     token = authorization.split(" ", 1)[1]
@@ -39,7 +41,15 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
         )
     if r.status_code != 200:
         raise HTTPException(status_code=401, detail="Session invalide ou expirée")
-    return r.json()
+    user = r.json()
+    if require_sub:
+        from database import is_subscribed
+        if not is_subscribed(user.get("email", "")):
+            raise HTTPException(status_code=403, detail="Abonnement requis")
+    return user
+
+async def get_subscribed_user(authorization: str = Header(None)) -> dict:
+    return await get_current_user(authorization=authorization, require_sub=True)
 
 @app.on_event("startup")
 def on_startup():
@@ -130,13 +140,102 @@ async def vinted_brand(brand_id: int):
 
 @app.get("/me")
 async def me(user: dict = Depends(get_current_user)):
-    return {"id": user.get("id"), "email": user.get("email")}
+    from database import is_subscribed
+    email = user.get("email", "")
+    return {"id": user.get("id"), "email": email, "subscribed": is_subscribed(email)}
+
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+
+    # Verify Stripe signature (HMAC-SHA256)
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            parts = {k: v for item in sig.split(",") for k, v in [item.split("=", 1)]}
+            timestamp = parts.get("t", "")
+            v1 = parts.get("v1", "")
+            signed = f"{timestamp}.{payload.decode()}"
+            expected = hmac.new(STRIPE_WEBHOOK_SECRET.encode(), signed.encode(), hashlib.sha256).hexdigest()  # type: ignore
+            if not hmac.compare_digest(expected, v1):
+                raise HTTPException(status_code=400, detail="Invalid signature")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=400, detail="Webhook error")
+
+    import json
+    from database import upsert_subscription
+    try:
+        event = json.loads(payload)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    etype = event.get("type", "")
+    obj = event.get("data", {}).get("object", {})
+
+    if etype == "checkout.session.completed":
+        email = obj.get("customer_email") or obj.get("customer_details", {}).get("email")
+        if email:
+            upsert_subscription(
+                user_email=email,
+                stripe_customer_id=obj.get("customer"),
+                stripe_subscription_id=obj.get("subscription"),
+                status="active",
+            )
+
+    elif etype in ("customer.subscription.updated", "customer.subscription.created"):
+        status = "active" if obj.get("status") == "active" else "inactive"
+        cpe = None
+        if obj.get("current_period_end"):
+            from datetime import datetime
+            cpe = datetime.fromtimestamp(obj["current_period_end"]).isoformat()
+        # Need customer email — fetch it via customer ID
+        customer_id = obj.get("customer")
+        if customer_id and STRIPE_WEBHOOK_SECRET:
+            try:
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"https://api.stripe.com/v1/customers/{customer_id}",
+                        headers={"Authorization": f"Bearer {os.getenv('STRIPE_SECRET_KEY', '')}"},
+                        timeout=10,
+                    )
+                email = r.json().get("email") if r.status_code == 200 else None
+                if email:
+                    upsert_subscription(
+                        user_email=email,
+                        stripe_customer_id=customer_id,
+                        stripe_subscription_id=obj.get("id"),
+                        status=status,
+                        current_period_end=cpe,
+                    )
+            except Exception:
+                pass
+
+    elif etype in ("customer.subscription.deleted",):
+        customer_id = obj.get("customer")
+        if customer_id and STRIPE_WEBHOOK_SECRET:
+            try:
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"https://api.stripe.com/v1/customers/{customer_id}",
+                        headers={"Authorization": f"Bearer {os.getenv('STRIPE_SECRET_KEY', '')}"},
+                        timeout=10,
+                    )
+                email = r.json().get("email") if r.status_code == 200 else None
+                if email:
+                    upsert_subscription(user_email=email, status="inactive")
+            except Exception:
+                pass
+
+    return {"received": True}
 
 
 # ---- NICHES ----
 
 @app.get("/niches")
-async def niches_list(user: dict = Depends(get_current_user)):
+async def niches_list(user: dict = Depends(get_subscribed_user)):
     try:
         from database import list_user_niches
         return list_user_niches(user["id"])
@@ -144,7 +243,7 @@ async def niches_list(user: dict = Depends(get_current_user)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/niches")
-async def niches_create(payload: dict, user: dict = Depends(get_current_user)):
+async def niches_create(payload: dict, user: dict = Depends(get_subscribed_user)):
     try:
         from database import create_user_niche
         nom = (payload.get("nom") or "").strip()
@@ -160,7 +259,7 @@ async def niches_create(payload: dict, user: dict = Depends(get_current_user)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.delete("/niches/{niche_id}")
-async def niches_delete(niche_id: int, user: dict = Depends(get_current_user)):
+async def niches_delete(niche_id: int, user: dict = Depends(get_subscribed_user)):
     try:
         from database import delete_user_niche
         ok = delete_user_niche(user["id"], niche_id)
@@ -174,7 +273,7 @@ async def niches_delete(niche_id: int, user: dict = Depends(get_current_user)):
 # ---- SURVEILLANCE ----
 
 @app.get("/surveillance")
-async def surveillance_list(user: dict = Depends(get_current_user)):
+async def surveillance_list(user: dict = Depends(get_subscribed_user)):
     try:
         from database import refresh_surveillance
         return refresh_surveillance(user["id"])
@@ -182,7 +281,7 @@ async def surveillance_list(user: dict = Depends(get_current_user)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/surveillance")
-async def surveillance_add(payload: dict, user: dict = Depends(get_current_user)):
+async def surveillance_add(payload: dict, user: dict = Depends(get_subscribed_user)):
     try:
         from database import add_surveillance
         if not payload.get("id"):
@@ -192,7 +291,7 @@ async def surveillance_add(payload: dict, user: dict = Depends(get_current_user)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.delete("/surveillance/{annonce_id}")
-async def surveillance_remove(annonce_id: int, user: dict = Depends(get_current_user)):
+async def surveillance_remove(annonce_id: int, user: dict = Depends(get_subscribed_user)):
     try:
         from database import remove_surveillance
         remove_surveillance(user["id"], annonce_id)
