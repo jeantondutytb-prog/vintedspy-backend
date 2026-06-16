@@ -313,42 +313,57 @@ def list_user_niches(user_id: str) -> list[dict]:
         result = [dict(r) for r in conn.execute("SELECT id,nom,marque,taille,score_min,prix_min,recherche,created_le FROM niches WHERE user_id=? ORDER BY id DESC", (user_id,)).fetchall()]
 
     for n in result:
-        n["nb_annonces"] = _count_matching(conn, mode, n["marque"], n["taille"], n["prix_min"], n.get("recherche"))
+        stats = _stats_matching(conn, mode, n["marque"], n["taille"], n["prix_min"], n.get("recherche"))
+        n.update(stats)
     return result
 
-def _count_matching(conn, mode, marque, taille, prix_min, recherche=None):
-    conditions, params = [], []
+def _build_where(mode, marque, taille, prix_min, recherche):
+    """Return (where_clause, params_list, kwargs_dict) for niche filters."""
+    conditions, params, kwargs = [], [], {}
     if marque:
         conditions.append("LOWER(marque) = " + (":marque" if mode == "pg" else "?"))
-        params.append(marque.lower())
+        params.append(marque.lower()); kwargs["marque"] = marque.lower()
     if taille:
         conditions.append("LOWER(taille) = " + (":taille" if mode == "pg" else "?"))
-        params.append(taille.lower())
+        params.append(taille.lower()); kwargs["taille"] = taille.lower()
     if prix_min is not None:
         conditions.append("prix >= " + (":prix_min" if mode == "pg" else "?"))
-        params.append(prix_min)
+        params.append(prix_min); kwargs["prix_min"] = prix_min
     if recherche:
+        r = f"%{recherche.lower()}%"
         if mode == "pg":
             conditions.append("(LOWER(titre) LIKE :recherche OR LOWER(marque) LIKE :recherche2)")
-            params.append(f"%{recherche.lower()}%")
-            params.append(f"%{recherche.lower()}%")
+            params.extend([r, r]); kwargs["recherche"] = r; kwargs["recherche2"] = r
         else:
             conditions.append("(LOWER(titre) LIKE ? OR LOWER(marque) LIKE ?)")
-            params.append(f"%{recherche.lower()}%")
-            params.append(f"%{recherche.lower()}%")
+            params.extend([r, r])
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    return where, params, kwargs
+
+def _count_matching(conn, mode, marque, taille, prix_min, recherche=None):
+    where, params, kwargs = _build_where(mode, marque, taille, prix_min, recherche)
     q = f"SELECT COUNT(*) FROM annonces {where}"
     if mode == "pg":
-        kwargs = {}
-        i = 0
-        if marque: kwargs["marque"] = params[i]; i += 1
-        if taille: kwargs["taille"] = params[i]; i += 1
-        if prix_min is not None: kwargs["prix_min"] = params[i]; i += 1
-        if recherche:
-            kwargs["recherche"] = params[i]; i += 1
-            kwargs["recherche2"] = params[i]; i += 1  # two identical values, two named params
         return conn.run(q, **kwargs)[0][0]
     return conn.execute(q, params).fetchone()[0]
+
+def _stats_matching(conn, mode, marque, taille, prix_min, recherche=None):
+    """Return aggregate stats for annonces matching niche filters."""
+    where, params, kwargs = _build_where(mode, marque, taille, prix_min, recherche)
+    q = f"SELECT COUNT(*), AVG(prix), MIN(prix), MAX(prix), AVG(nb_favoris) FROM annonces {where}"
+    if mode == "pg":
+        row = conn.run(q, **kwargs)
+    else:
+        row = conn.execute(q, params).fetchall()
+    r = row[0] if row else (0, None, None, None, None)
+    def fmt(v): return round(float(v), 2) if v is not None else None
+    return {
+        "nb_annonces": int(r[0] or 0),
+        "prix_moyen": fmt(r[1]),
+        "prix_min_val": fmt(r[2]),
+        "prix_max_val": fmt(r[3]),
+        "favoris_moyen": fmt(r[4]),
+    }
 
 def create_user_niche(user_id: str, nom: str, marque: str = None, taille: str = None,
                        score_min: int = None, prix_min: float = None, recherche: str = None) -> dict:
