@@ -347,8 +347,19 @@ def list_user_niches(user_id: str) -> list[dict]:
         result = [dict(r) for r in conn.execute("SELECT id,nom,marque,taille,score_min,prix_min,recherche,lien,created_le FROM niches WHERE user_id=? ORDER BY id DESC", (user_id,)).fetchall()]
 
     for n in result:
-        stats = _stats_matching(conn, mode, n["marque"], n["taille"], n["prix_min"], n.get("recherche"))
-        n.update(stats)
+        if mode == "pg":
+            row = conn.run("""SELECT COUNT(*), COUNT(sold_at), AVG(prix), MIN(prix), MAX(prix)
+                FROM niche_items WHERE niche_id=:nid""", nid=n["id"])
+        else:
+            row = conn.execute("""SELECT COUNT(*), COUNT(sold_at), AVG(prix), MIN(prix), MAX(prix)
+                FROM niche_items WHERE niche_id=?""", (n["id"],)).fetchall()
+        r = row[0] if row else (0, 0, None, None, None)
+        def fmt(v): return round(float(v), 2) if v is not None else None
+        n["nb_items"]    = int(r[0] or 0)
+        n["nb_vendus"]   = int(r[1] or 0)
+        n["prix_moyen"]  = fmt(r[2])
+        n["prix_min_val"]= fmt(r[3])
+        n["prix_max_val"]= fmt(r[4])
     return result
 
 def _build_where(mode, marque, taille, prix_min, recherche):
