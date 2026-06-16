@@ -127,7 +127,9 @@ async def vinted_brand(brand_id: int):
 async def me(user: dict = Depends(get_current_user)):
     from database import is_subscribed
     email = user.get("email", "")
-    return {"id": user.get("id"), "email": email, "subscribed": is_subscribed(email)}
+    admin_emails = {e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+    subscribed = email in admin_emails or is_subscribed(email)
+    return {"id": user.get("id"), "email": email, "subscribed": subscribed}
 
 
 @app.post("/stripe/webhook")
