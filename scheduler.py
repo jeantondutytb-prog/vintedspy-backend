@@ -75,78 +75,57 @@ def ids_already_in_db(ids: list[int]) -> set[int]:
         return set()
 
 
-async def run_scan():
-    from database import init_db, sauvegarder_annonces, stats_db
+async def run_scan_with_session(s, cookies_str):
+    from database import sauvegarder_annonces, stats_db
     log.info("=== Démarrage scan global Vinted ===")
-
-    try:
-        cookies_str, jar = await get_cookies()
-    except Exception as e:
-        log.error(f"Cookies: {e}")
-        return
 
     toutes = []
     stop = False
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=20, cookies=jar) as s:
-        for page in range(1, MAX_PAGES + 1):
-            if stop:
-                break
+    for page in range(1, MAX_PAGES + 1):
+        if stop:
+            break
+        try:
+            r = await s.get(
+                BASE + "/api/v2/catalog/items",
+                params={"order": "newest_first", "per_page": PER_PAGE, "page": page},
+                headers={
+                    "User-Agent": UA, "Accept": "application/json",
+                    "Cookie": cookies_str, "Referer": BASE, "Accept-Language": "fr-FR,fr;q=0.9",
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            log.error(f"Page {page}: {e}")
+            break
 
-            try:
-                r = await s.get(
-                    BASE + "/api/v2/catalog/items",
-                    params={
-                        "order":    "newest_first",
-                        "per_page": PER_PAGE,
-                        "page":     page,
-                    },
-                    headers={
-                        "User-Agent":      UA,
-                        "Accept":          "application/json",
-                        "Cookie":          cookies_str,
-                        "Referer":         BASE,
-                        "Accept-Language": "fr-FR,fr;q=0.9",
-                    },
-                    timeout=15,
-                )
-            except Exception as e:
-                log.error(f"Page {page}: {e}")
-                break
+        if r.status_code == 429:
+            log.warning("Rate limit Vinted — pause 60s")
+            await asyncio.sleep(60)
+            continue
+        if r.status_code != 200:
+            log.warning(f"Page {page}: HTTP {r.status_code}")
+            break
 
-            if r.status_code == 429:
-                log.warning("Rate limit Vinted — pause 60s")
-                await asyncio.sleep(60)
-                continue
-            if r.status_code != 200:
-                log.warning(f"Page {page}: HTTP {r.status_code}")
-                break
+        items = r.json().get("items", [])
+        if not items:
+            log.info(f"Page {page}: vide, on s'arrête")
+            break
 
-            items = r.json().get("items", [])
-            if not items:
-                log.info(f"Page {page}: vide, on s'arrête")
-                break
+        page_annonces = [a for a in (parse_item(i) for i in items) if a]
+        page_ids = [a["id"] for a in page_annonces]
+        known_ids = ids_already_in_db(page_ids)
+        new_on_page = [a for a in page_annonces if a["id"] not in known_ids]
+        toutes.extend(new_on_page)
 
-            # Parser les items
-            page_annonces = [a for a in (parse_item(i) for i in items) if a]
+        ratio_connu = len(known_ids) / max(len(page_ids), 1)
+        log.info(f"Page {page}: {len(items)} items | {len(new_on_page)} nouveaux | {len(known_ids)} déjà connus")
 
-            # Vérifier si on retombe sur des IDs déjà connus
-            page_ids = [a["id"] for a in page_annonces]
-            known_ids = ids_already_in_db(page_ids)
+        if ratio_connu > 0.5:
+            log.info("Majorité d'annonces déjà connues — scan terminé")
+            stop = True
 
-            new_on_page = [a for a in page_annonces if a["id"] not in known_ids]
-            toutes.extend(new_on_page)
-
-            ratio_connu = len(known_ids) / max(len(page_ids), 1)
-            log.info(f"Page {page}: {len(items)} items | {len(new_on_page)} nouveaux | {len(known_ids)} déjà connus")
-
-            # Si plus de 50% des items sont déjà connus → on a rattrapé le front
-            if ratio_connu > 0.5:
-                log.info("Majorité d'annonces déjà connues — scan terminé")
-                stop = True
-
-            # Pause entre les pages
-            await asyncio.sleep(2)
+        await asyncio.sleep(2)
 
     if toutes:
         nouvelles = sauvegarder_annonces(toutes)
@@ -154,6 +133,63 @@ async def run_scan():
         log.info(f"Scan terminé — {nouvelles} nouvelles annonces | DB: {stats['annonces']} total")
     else:
         log.info("Scan terminé — aucune nouvelle annonce")
+
+
+async def run_niche_scans(s, cookies_str):
+    """Scan each active niche for new listings."""
+    from urllib.parse import urlparse, parse_qs
+    from database import get_active_niches, upsert_niche_items, mark_niche_items_sold
+
+    niches = get_active_niches()
+    if not niches:
+        return
+    log.info(f"Niches: {len(niches)} à scanner")
+
+    for niche in niches:
+        lien = niche.get("lien", "")
+        niche_id = niche["id"]
+        if not lien:
+            continue
+        try:
+            parsed = urlparse(lien if lien.startswith("http") else f"https://{lien}")
+            qs = parse_qs(parsed.query, keep_blank_values=False)
+
+            api_params = {"order": "newest_first", "per_page": PER_PAGE, "page": 1}
+            # Pass through all catalog filter params as-is
+            for key in qs:
+                val = qs[key]
+                api_params[key] = val[0] if len(val) == 1 else val
+
+            r = await s.get(
+                BASE + "/api/v2/catalog/items",
+                params=api_params,
+                headers={
+                    "User-Agent": UA,
+                    "Accept": "application/json",
+                    "Cookie": cookies_str,
+                    "Referer": BASE,
+                    "Accept-Language": "fr-FR,fr;q=0.9",
+                },
+                timeout=15,
+            )
+            if r.status_code == 429:
+                log.warning(f"Niche {niche_id}: rate limit, skip")
+                await asyncio.sleep(30)
+                continue
+            if r.status_code != 200:
+                log.warning(f"Niche {niche_id}: HTTP {r.status_code}")
+                continue
+
+            items = r.json().get("items", [])
+            annonces = [a for a in (parse_item(i) for i in items) if a]
+            if annonces:
+                upsert_niche_items(niche_id, annonces)
+                seen_ids = [a["id"] for a in annonces]
+                mark_niche_items_sold(niche_id, seen_ids, INTERVAL)
+                log.info(f"Niche {niche_id} '{niche['nom']}': {len(annonces)} items | {len(seen_ids)} vus")
+        except Exception as e:
+            log.error(f"Niche {niche_id}: {e}")
+        await asyncio.sleep(3)
 
 
 async def main():
@@ -166,7 +202,10 @@ async def main():
         scan_count += 1
         log.info(f"--- Scan #{scan_count} ---")
         try:
-            await run_scan()
+            cookies_str, jar = await get_cookies()
+            async with httpx.AsyncClient(follow_redirects=True, timeout=20, cookies=jar) as s:
+                await run_scan_with_session(s, cookies_str)
+                await run_niche_scans(s, cookies_str)
         except Exception as e:
             log.error(f"Erreur scan #{scan_count}: {e}")
         log.info(f"Prochain scan dans {INTERVAL//60} min")

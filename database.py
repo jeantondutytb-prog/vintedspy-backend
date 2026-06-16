@@ -60,12 +60,25 @@ def init_db():
         conn.run("""CREATE TABLE IF NOT EXISTS niches (
             id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, nom TEXT,
             marque TEXT, taille TEXT, score_min INTEGER, prix_min REAL,
-            recherche TEXT, created_le TEXT)""")
+            recherche TEXT, lien TEXT, created_le TEXT)""")
         try:
             conn.run("CREATE INDEX IF NOT EXISTS idx_niches_user ON niches(user_id)")
         except: pass
         try:
             conn.run("ALTER TABLE niches ADD COLUMN IF NOT EXISTS recherche TEXT")
+        except: pass
+        try:
+            conn.run("ALTER TABLE niches ADD COLUMN IF NOT EXISTS lien TEXT")
+        except: pass
+        conn.run("""CREATE TABLE IF NOT EXISTS niche_items (
+            id BIGSERIAL PRIMARY KEY,
+            niche_id BIGINT NOT NULL,
+            vinted_id BIGINT NOT NULL,
+            titre TEXT, prix REAL, photo TEXT, url TEXT, marque TEXT, taille TEXT,
+            first_seen TEXT, last_seen TEXT, sold_at TEXT,
+            UNIQUE(niche_id, vinted_id))""")
+        try:
+            conn.run("CREATE INDEX IF NOT EXISTS idx_niche_items_niche ON niche_items(niche_id)")
         except: pass
         conn.run("""CREATE TABLE IF NOT EXISTS surveillance (
             id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, annonce_id BIGINT NOT NULL,
@@ -96,8 +109,15 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_marque_taille ON prix_history(marque, taille);
             CREATE TABLE IF NOT EXISTS niches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, nom TEXT,
-                marque TEXT, taille TEXT, score_min INTEGER, prix_min REAL, recherche TEXT, created_le TEXT);
+                marque TEXT, taille TEXT, score_min INTEGER, prix_min REAL, recherche TEXT, lien TEXT, created_le TEXT);
             CREATE INDEX IF NOT EXISTS idx_niches_user ON niches(user_id);
+            CREATE TABLE IF NOT EXISTS niche_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                niche_id INTEGER NOT NULL, vinted_id INTEGER NOT NULL,
+                titre TEXT, prix REAL, photo TEXT, url TEXT, marque TEXT, taille TEXT,
+                first_seen TEXT, last_seen TEXT, sold_at TEXT,
+                UNIQUE(niche_id, vinted_id));
+            CREATE INDEX IF NOT EXISTS idx_niche_items_niche ON niche_items(niche_id);
             CREATE TABLE IF NOT EXISTS surveillance (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, annonce_id INTEGER NOT NULL,
                 titre TEXT, marque TEXT, taille TEXT, prix REAL, photo TEXT, url TEXT,
@@ -108,6 +128,20 @@ def init_db():
         conn.commit()
         try:
             conn.execute("ALTER TABLE niches ADD COLUMN recherche TEXT")
+            conn.commit()
+        except: pass
+        try:
+            conn.execute("ALTER TABLE niches ADD COLUMN lien TEXT")
+            conn.commit()
+        except: pass
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS niche_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                niche_id INTEGER NOT NULL, vinted_id INTEGER NOT NULL,
+                titre TEXT, prix REAL, photo TEXT, url TEXT, marque TEXT, taille TEXT,
+                first_seen TEXT, last_seen TEXT, sold_at TEXT,
+                UNIQUE(niche_id, vinted_id))""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_niche_items_niche ON niche_items(niche_id)")
             conn.commit()
         except: pass
         try:
@@ -306,11 +340,11 @@ def stats_db() -> dict:
 def list_user_niches(user_id: str) -> list[dict]:
     conn, mode = get_conn()
     if mode == "pg":
-        rows = conn.run("SELECT id,nom,marque,taille,score_min,prix_min,recherche,created_le FROM niches WHERE user_id=:u ORDER BY id DESC", u=user_id)
-        cols = ["id","nom","marque","taille","score_min","prix_min","recherche","created_le"]
+        rows = conn.run("SELECT id,nom,marque,taille,score_min,prix_min,recherche,lien,created_le FROM niches WHERE user_id=:u ORDER BY id DESC", u=user_id)
+        cols = ["id","nom","marque","taille","score_min","prix_min","recherche","lien","created_le"]
         result = [dict(zip(cols, r)) for r in rows]
     else:
-        result = [dict(r) for r in conn.execute("SELECT id,nom,marque,taille,score_min,prix_min,recherche,created_le FROM niches WHERE user_id=? ORDER BY id DESC", (user_id,)).fetchall()]
+        result = [dict(r) for r in conn.execute("SELECT id,nom,marque,taille,score_min,prix_min,recherche,lien,created_le FROM niches WHERE user_id=? ORDER BY id DESC", (user_id,)).fetchall()]
 
     for n in result:
         stats = _stats_matching(conn, mode, n["marque"], n["taille"], n["prix_min"], n.get("recherche"))
@@ -366,21 +400,96 @@ def _stats_matching(conn, mode, marque, taille, prix_min, recherche=None):
     }
 
 def create_user_niche(user_id: str, nom: str, marque: str = None, taille: str = None,
-                       score_min: int = None, prix_min: float = None, recherche: str = None) -> dict:
+                       score_min: int = None, prix_min: float = None, recherche: str = None,
+                       lien: str = None) -> dict:
     conn, mode = get_conn()
     now = datetime.now().isoformat()
     if mode == "pg":
-        row = conn.run("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,recherche,created_le)
-            VALUES (:u,:nom,:marque,:taille,:score_min,:prix_min,:recherche,:now) RETURNING id""",
-            u=user_id, nom=nom, marque=marque, taille=taille, score_min=score_min, prix_min=prix_min, recherche=recherche, now=now)
+        row = conn.run("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,recherche,lien,created_le)
+            VALUES (:u,:nom,:marque,:taille,:score_min,:prix_min,:recherche,:lien,:now) RETURNING id""",
+            u=user_id, nom=nom, marque=marque, taille=taille, score_min=score_min, prix_min=prix_min,
+            recherche=recherche, lien=lien, now=now)
         new_id = row[0][0]
     else:
-        conn.execute("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,recherche,created_le)
-            VALUES (?,?,?,?,?,?,?,?)""", (user_id, nom, marque, taille, score_min, prix_min, recherche, now))
+        conn.execute("""INSERT INTO niches (user_id,nom,marque,taille,score_min,prix_min,recherche,lien,created_le)
+            VALUES (?,?,?,?,?,?,?,?,?)""", (user_id, nom, marque, taille, score_min, prix_min, recherche, lien, now))
         conn.commit()
         new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     return {"id": new_id, "nom": nom, "marque": marque, "taille": taille,
-            "score_min": score_min, "prix_min": prix_min, "recherche": recherche, "created_le": now, "nb_annonces": 0}
+            "score_min": score_min, "prix_min": prix_min, "recherche": recherche, "lien": lien,
+            "created_le": now, "nb_annonces": 0}
+
+
+def get_active_niches() -> list[dict]:
+    """Return all niches that have a Vinted link (for the worker to scan)."""
+    conn, mode = get_conn()
+    if mode == "pg":
+        rows = conn.run("SELECT id, nom, lien FROM niches WHERE lien IS NOT NULL AND lien != ''")
+        return [{"id": r[0], "nom": r[1], "lien": r[2]} for r in rows]
+    rows = conn.execute("SELECT id, nom, lien FROM niches WHERE lien IS NOT NULL AND lien != ''").fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_niche_items(niche_id: int, items: list[dict]):
+    """Insert new items; update last_seen for existing ones."""
+    conn, mode = get_conn()
+    now = datetime.now().isoformat()
+    for item in items:
+        try:
+            if mode == "pg":
+                conn.run("""INSERT INTO niche_items
+                    (niche_id,vinted_id,titre,prix,photo,url,marque,taille,first_seen,last_seen)
+                    VALUES (:nid,:vid,:titre,:prix,:photo,:url,:marque,:taille,:now,:now)
+                    ON CONFLICT (niche_id,vinted_id) DO UPDATE SET last_seen=:now""",
+                    nid=niche_id, vid=int(item["id"]), titre=item.get("titre",""),
+                    prix=item.get("prix",0), photo=item.get("photo",""),
+                    url=item.get("url",""), marque=item.get("marque",""),
+                    taille=item.get("taille",""), now=now)
+            else:
+                conn.execute("""INSERT OR IGNORE INTO niche_items
+                    (niche_id,vinted_id,titre,prix,photo,url,marque,taille,first_seen,last_seen)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (niche_id, int(item["id"]), item.get("titre",""), item.get("prix",0),
+                     item.get("photo",""), item.get("url",""), item.get("marque",""),
+                     item.get("taille",""), now, now))
+                conn.execute("UPDATE niche_items SET last_seen=? WHERE niche_id=? AND vinted_id=? AND sold_at IS NULL",
+                    (now, niche_id, int(item["id"])))
+                conn.commit()
+        except Exception as e:
+            log.error(f"upsert_niche_items {item.get('id')}: {e}")
+
+
+def mark_niche_items_sold(niche_id: int, seen_ids: list[int], scan_interval_sec: int = 1200):
+    """Mark items not seen in this scan as sold if they're old enough."""
+    conn, mode = get_conn()
+    now = datetime.now().isoformat()
+    cutoff = (datetime.now() - timedelta(seconds=scan_interval_sec * 2)).isoformat()
+    if not seen_ids:
+        return
+    if mode == "pg":
+        conn.run("""UPDATE niche_items SET sold_at=:now
+            WHERE niche_id=:nid AND sold_at IS NULL
+            AND vinted_id != ALL(:seen) AND last_seen < :cutoff""",
+            now=now, nid=niche_id, seen=seen_ids, cutoff=cutoff)
+    else:
+        placeholders = ",".join("?" for _ in seen_ids)
+        conn.execute(f"""UPDATE niche_items SET sold_at=?
+            WHERE niche_id=? AND sold_at IS NULL
+            AND vinted_id NOT IN ({placeholders}) AND last_seen < ?""",
+            [now, niche_id] + seen_ids + [cutoff])
+        conn.commit()
+
+
+def get_niche_items(niche_id: int, limit: int = 100) -> list[dict]:
+    conn, mode = get_conn()
+    cols = ["id","vinted_id","titre","prix","photo","url","marque","taille","first_seen","sold_at"]
+    if mode == "pg":
+        rows = conn.run(f"SELECT {','.join(cols)} FROM niche_items WHERE niche_id=:nid ORDER BY first_seen DESC LIMIT :limit",
+            nid=niche_id, limit=limit)
+        return [dict(zip(cols, r)) for r in rows]
+    rows = conn.execute(f"SELECT {','.join(cols)} FROM niche_items WHERE niche_id=? ORDER BY first_seen DESC LIMIT ?",
+        (niche_id, limit)).fetchall()
+    return [dict(r) for r in rows]
 
 def delete_user_niche(user_id: str, niche_id: int) -> bool:
     conn, mode = get_conn()

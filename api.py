@@ -243,8 +243,16 @@ async def niches_create(payload: dict, user: dict = Depends(get_subscribed_user)
             user["id"], nom,
             marque=payload.get("marque"), taille=payload.get("taille"),
             score_min=payload.get("score_min"), prix_min=payload.get("prix_min"),
-            recherche=payload.get("recherche"),
+            recherche=payload.get("recherche"), lien=payload.get("lien"),
         )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/niches/{niche_id}/items")
+async def niches_items(niche_id: int, limit: int = Query(100, ge=1, le=500), user: dict = Depends(get_subscribed_user)):
+    try:
+        from database import get_niche_items
+        return get_niche_items(niche_id, limit=limit)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
