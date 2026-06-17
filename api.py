@@ -157,7 +157,7 @@ async def vinted_brand(brand_id: int, user: dict = Depends(get_subscribed_user))
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
 
 
-NICHE_LIMITS = {"free": None, "starter": None, "pro": None, "expert": None}
+NICHE_LIMITS = {"free": 0, "starter": 1, "pro": 5, "expert": None}  # None = illimité
 
 def _get_plan(user: dict) -> str:
     email = user.get("email", "")
@@ -372,6 +372,9 @@ async def surveillance_add(payload: dict, user: dict = Depends(get_subscribed_us
         from database import add_surveillance
         if not payload.get("id"):
             return JSONResponse(status_code=400, content={"error": "id requis"})
+        plan = _get_plan(user)
+        if plan == "starter":
+            return JSONResponse(status_code=403, content={"error": "plan_upgrade", "plan": plan})
         return add_surveillance(user["id"], payload)
     except Exception as e:
         log.error(f"surveillance_add: {e}")
