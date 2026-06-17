@@ -51,7 +51,10 @@ def init_db():
     if mode == "pg":
         conn.run("""CREATE TABLE IF NOT EXISTS annonces (
             id BIGINT PRIMARY KEY, titre TEXT, marque TEXT, taille TEXT,
-            prix REAL, nb_favoris INTEGER, url TEXT, photo TEXT, vendeur TEXT, scraped_le TEXT)""")
+            prix REAL, nb_favoris INTEGER, url TEXT, photo TEXT, vendeur TEXT, scraped_le TEXT, publie_le TEXT)""")
+        try:
+            conn.run("ALTER TABLE annonces ADD COLUMN IF NOT EXISTS publie_le TEXT")
+        except: pass
         conn.run("""CREATE TABLE IF NOT EXISTS prix_history (
             id BIGSERIAL PRIMARY KEY, marque TEXT, taille TEXT, prix REAL, scraped_le TEXT)""")
         try:
@@ -108,7 +111,7 @@ def init_db():
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS annonces (
                 id INTEGER PRIMARY KEY, titre TEXT, marque TEXT, taille TEXT,
-                prix REAL, nb_favoris INTEGER, url TEXT, photo TEXT, vendeur TEXT, scraped_le TEXT);
+                prix REAL, nb_favoris INTEGER, url TEXT, photo TEXT, vendeur TEXT, scraped_le TEXT, publie_le TEXT);
             CREATE TABLE IF NOT EXISTS prix_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, marque TEXT, taille TEXT, prix REAL, scraped_le TEXT);
             CREATE INDEX IF NOT EXISTS idx_marque_taille ON prix_history(marque, taille);
@@ -137,6 +140,10 @@ def init_db():
         except: pass
         try:
             conn.execute("ALTER TABLE niches ADD COLUMN lien TEXT")
+            conn.commit()
+        except: pass
+        try:
+            conn.execute("ALTER TABLE annonces ADD COLUMN publie_le TEXT")
             conn.commit()
         except: pass
         try:
@@ -178,21 +185,22 @@ def sauvegarder_annonces(annonces: list[dict]) -> int:
     for a in annonces:
         try:
             if mode == "pg":
-                conn.run("""INSERT INTO annonces (id,titre,marque,taille,prix,nb_favoris,url,photo,vendeur,scraped_le)
-                    VALUES (:id,:titre,:marque,:taille,:prix,:nb_favoris,:url,:photo,:vendeur,:now)
+                conn.run("""INSERT INTO annonces (id,titre,marque,taille,prix,nb_favoris,url,photo,vendeur,scraped_le,publie_le)
+                    VALUES (:id,:titre,:marque,:taille,:prix,:nb_favoris,:url,:photo,:vendeur,:now,:publie_le)
                     ON CONFLICT (id) DO NOTHING""",
                     id=a["id"],titre=a["titre"],marque=a["marque"],taille=a["taille"],
                     prix=a["prix"],nb_favoris=a["nb_favoris"],url=a["url"],
-                    photo=a.get("photo",""),vendeur=a.get("vendeur",""),now=now)
+                    photo=a.get("photo",""),vendeur=a.get("vendeur",""),now=now,
+                    publie_le=a.get("publie_le",""))
                 if conn.row_count > 0:
                     nouvelles += 1
                     conn.run("INSERT INTO prix_history (marque,taille,prix,scraped_le) VALUES (:m,:t,:p,:n)",
                         m=a["marque"],t=a["taille"],p=a["prix"],n=now)
             else:
-                conn.execute("""INSERT OR IGNORE INTO annonces (id,titre,marque,taille,prix,nb_favoris,url,photo,vendeur,scraped_le)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                conn.execute("""INSERT OR IGNORE INTO annonces (id,titre,marque,taille,prix,nb_favoris,url,photo,vendeur,scraped_le,publie_le)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (a["id"],a["titre"],a["marque"],a["taille"],a["prix"],
-                     a["nb_favoris"],a["url"],a.get("photo",""),a.get("vendeur",""),now))
+                     a["nb_favoris"],a["url"],a.get("photo",""),a.get("vendeur",""),now,a.get("publie_le","")))
                 if conn.execute("SELECT changes()").fetchone()[0] > 0:
                     nouvelles += 1
                     conn.execute("INSERT INTO prix_history (marque,taille,prix,scraped_le) VALUES (?,?,?,?)",
@@ -230,8 +238,8 @@ def scorer_annonce(annonce: dict, prix_median) -> int:
 def get_opportunites(limit: int = 20) -> list[dict]:
     conn, mode = get_conn()
     if mode == "pg":
-        rows = conn.run("SELECT id,titre,marque,taille,prix,nb_favoris,url,photo,vendeur,scraped_le FROM annonces ORDER BY scraped_le DESC LIMIT 100")
-        cols = ["id","titre","marque","taille","prix","nb_favoris","url","photo","vendeur","scraped_le"]
+        rows = conn.run("SELECT id,titre,marque,taille,prix,nb_favoris,url,photo,vendeur,scraped_le,publie_le FROM annonces ORDER BY scraped_le DESC LIMIT 100")
+        cols = ["id","titre","marque","taille","prix","nb_favoris","url","photo","vendeur","scraped_le","publie_le"]
         annonces = [dict(zip(cols, r)) for r in rows]
     else:
         rows = conn.execute("SELECT * FROM annonces ORDER BY scraped_le DESC LIMIT 100").fetchall()
@@ -250,7 +258,7 @@ def get_opportunites(limit: int = 20) -> list[dict]:
     return sorted(resultats, key=lambda x: x["score"], reverse=True)[:limit]
 
 def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, order_clause, limit, offset, since_ts=None):
-    cols = ["id","titre","marque","taille","prix","nb_favoris","url","photo","vendeur","scraped_le"]
+    cols = ["id","titre","marque","taille","prix","nb_favoris","url","photo","vendeur","scraped_le","publie_le"]
     if mode == "pg":
         conditions, kwargs = [], {}
         if marques:

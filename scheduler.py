@@ -42,6 +42,7 @@ def parse_item(item):
             "photo":      (item.get("photo") or {}).get("url", ""),
             "vendeur":    (item.get("user") or {}).get("login", ""),
             "categorie":  item.get("catalog_title", ""),
+            "publie_le":  item.get("created_at", ""),
         }
     except Exception:
         return None
