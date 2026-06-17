@@ -257,7 +257,7 @@ def get_opportunites(limit: int = 20) -> list[dict]:
             resultats.append(a)
     return sorted(resultats, key=lambda x: x["score"], reverse=True)[:limit]
 
-def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, order_clause, limit, offset, since_ts=None):
+def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, order_clause, limit, offset, since_ts=None, favs_min=None):
     cols = ["id","titre","marque","taille","prix","nb_favoris","url","photo","vendeur","scraped_le","publie_le"]
     if mode == "pg":
         conditions, kwargs = [], {}
@@ -282,6 +282,9 @@ def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, or
         if since_ts:
             conditions.append("scraped_le >= :since_ts")
             kwargs["since_ts"] = since_ts
+        if favs_min is not None:
+            conditions.append("nb_favoris >= :favs_min")
+            kwargs["favs_min"] = favs_min
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         q = f"SELECT {','.join(cols)} FROM annonces {where} ORDER BY {order_clause} LIMIT :limit OFFSET :offset"
         kwargs.update({"limit": limit, "offset": offset})
@@ -308,6 +311,9 @@ def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, or
         if since_ts:
             conditions.append("scraped_le >= ?")
             params.append(since_ts)
+        if favs_min is not None:
+            conditions.append("nb_favoris >= ?")
+            params.append(favs_min)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         q = f"SELECT {','.join(cols)} FROM annonces {where} ORDER BY {order_clause} LIMIT ? OFFSET ?"
         params.extend([limit, offset])
@@ -319,14 +325,14 @@ def get_feed_annonces(offset: int = 0, limit: int = 40, marque: str = None,
                        taille: str = None, score_min: int = None,
                        prix_min: float = None, prix_max: float = None,
                        search: str = None, order: str = "recent",
-                       since_hours: int = None) -> list[dict]:
+                       since_hours: int = None, favs_min: int = None) -> list[dict]:
     conn, mode = get_conn()
     marques = [m.strip().lower() for m in marque.split(",") if m.strip()] if marque else None
     since_ts = (datetime.now() - timedelta(hours=since_hours)).isoformat() if since_hours else None
 
     if score_min is not None or order == "score":
         candidates = _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search,
-                                       "scraped_le DESC", min(offset + limit * 5, 200), 0, since_ts=since_ts)
+                                       "scraped_le DESC", min(offset + limit * 5, 200), 0, since_ts=since_ts, favs_min=favs_min)
         scored = []
         for a in candidates:
             median = get_median_prix(a["marque"], a["taille"])
@@ -345,7 +351,7 @@ def get_feed_annonces(offset: int = 0, limit: int = 40, marque: str = None,
         "favs":      "nb_favoris DESC",
     }.get(order, "scraped_le DESC")
 
-    return _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, order_clause, limit, offset, since_ts=since_ts)
+    return _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, order_clause, limit, offset, since_ts=since_ts, favs_min=favs_min)
 
 
 def stats_db() -> dict:

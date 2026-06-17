@@ -123,6 +123,7 @@ async def feed(
     search: str = Query(None),
     order: str = Query("recent"),
     since_hours: int = Query(None, ge=1, le=168),
+    favs_min: int = Query(None, ge=0),
     user: dict = Depends(get_subscribed_user),
 ):
     try:
@@ -130,7 +131,8 @@ async def feed(
         return get_feed_annonces(offset=offset, limit=limit, marque=marque,
                                   taille=taille, score_min=score_min,
                                   prix_min=prix_min, prix_max=prix_max,
-                                  search=search, order=order, since_hours=since_hours)
+                                  search=search, order=order, since_hours=since_hours,
+                                  favs_min=favs_min)
     except Exception as e:
         log.error(f"feed: {e}")
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
