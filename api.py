@@ -175,10 +175,12 @@ def _plan_to_amount(amount_cents: int) -> str:
 @app.get("/me")
 async def me(user: dict = Depends(get_current_user)):
     email = user.get("email", "")
+    admin_emails = {e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+    is_admin = email in admin_emails
     subscribed = _is_subscribed(user)
     plan = _get_plan(user)
     niche_limit = NICHE_LIMITS.get(plan)
-    return {"id": user.get("id"), "email": email, "subscribed": subscribed, "plan": plan, "niche_limit": niche_limit}
+    return {"id": user.get("id"), "email": email, "subscribed": subscribed, "plan": plan, "niche_limit": niche_limit, "is_admin": is_admin}
 
 
 @app.post("/stripe/webhook")
