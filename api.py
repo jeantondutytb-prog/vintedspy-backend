@@ -122,7 +122,7 @@ async def feed(
     prix_max: float = Query(None),
     search: str = Query(None),
     order: str = Query("recent"),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_subscribed_user),
 ):
     try:
         from database import get_feed_annonces
@@ -136,7 +136,7 @@ async def feed(
 
 
 @app.get("/vinted/brand/{brand_id}")
-async def vinted_brand(brand_id: int, user: dict = Depends(get_current_user)):
+async def vinted_brand(brand_id: int, user: dict = Depends(get_subscribed_user)):
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
@@ -281,7 +281,7 @@ async def stripe_webhook(request: Request):
 # ---- NICHES ----
 
 @app.get("/niches")
-async def niches_list(user: dict = Depends(get_current_user)):
+async def niches_list(user: dict = Depends(get_subscribed_user)):
     try:
         from database import list_user_niches
         niches = list_user_niches(user["id"])
@@ -302,7 +302,7 @@ class NichePayload(BaseModel):
     recherche: str = None
 
 @app.post("/niches")
-async def niches_create(payload: NichePayload, user: dict = Depends(get_current_user)):
+async def niches_create(payload: NichePayload, user: dict = Depends(get_subscribed_user)):
     try:
         from database import create_user_niche, list_user_niches
         nom = payload.nom.strip()
@@ -325,7 +325,7 @@ async def niches_create(payload: NichePayload, user: dict = Depends(get_current_
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
 
 @app.get("/niches/{niche_id}/items")
-async def niches_items(niche_id: int, limit: int = Query(100, ge=1, le=500), user: dict = Depends(get_current_user)):
+async def niches_items(niche_id: int, limit: int = Query(100, ge=1, le=500), user: dict = Depends(get_subscribed_user)):
     try:
         from database import get_niche_items, list_user_niches
         # Verify the niche belongs to the requesting user
@@ -338,7 +338,7 @@ async def niches_items(niche_id: int, limit: int = Query(100, ge=1, le=500), use
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
 
 @app.delete("/niches/{niche_id}")
-async def niches_delete(niche_id: int, user: dict = Depends(get_current_user)):
+async def niches_delete(niche_id: int, user: dict = Depends(get_subscribed_user)):
     try:
         from database import delete_user_niche
         ok = delete_user_niche(user["id"], niche_id)
@@ -353,7 +353,7 @@ async def niches_delete(niche_id: int, user: dict = Depends(get_current_user)):
 # ---- SURVEILLANCE ----
 
 @app.get("/surveillance")
-async def surveillance_list(user: dict = Depends(get_current_user)):
+async def surveillance_list(user: dict = Depends(get_subscribed_user)):
     try:
         from database import refresh_surveillance
         return refresh_surveillance(user["id"])
@@ -362,7 +362,7 @@ async def surveillance_list(user: dict = Depends(get_current_user)):
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
 
 @app.post("/surveillance")
-async def surveillance_add(payload: dict, user: dict = Depends(get_current_user)):
+async def surveillance_add(payload: dict, user: dict = Depends(get_subscribed_user)):
     try:
         from database import add_surveillance
         if not payload.get("id"):
@@ -373,7 +373,7 @@ async def surveillance_add(payload: dict, user: dict = Depends(get_current_user)
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
 
 @app.delete("/surveillance/{annonce_id}")
-async def surveillance_remove(annonce_id: int, user: dict = Depends(get_current_user)):
+async def surveillance_remove(annonce_id: int, user: dict = Depends(get_subscribed_user)):
     try:
         from database import remove_surveillance
         remove_surveillance(user["id"], annonce_id)
