@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 app = FastAPI(title="VintedSpy API", version="1.0.0")
 
 ALLOWED_ORIGINS = [
+    "https://trakx.fr",
+    "https://www.trakx.fr",
     "https://vintedspy.vercel.app",
     "http://localhost:3000",
     "http://localhost:5500",
