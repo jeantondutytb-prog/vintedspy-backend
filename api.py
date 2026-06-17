@@ -388,6 +388,7 @@ async def surveillance_remove(annonce_id: int, user: dict = Depends(get_subscrib
 
 STRIPE_DEFAULT_PRICE = "9,90€/mois"
 STRIPE_DEFAULT_URL = "https://buy.stripe.com/00w8wOcJObg0fIw422c7u00"
+STRIPE_DEFAULT_PORTAL_URL = "https://billing.stripe.com/p/login/00w8wOcJObg0fIw422c7u00"
 
 @app.get("/config")
 def config_get():
@@ -395,7 +396,7 @@ def config_get():
     return {
         "price_display": get_config("price_display", STRIPE_DEFAULT_PRICE),
         "stripe_url": get_config("stripe_url", STRIPE_DEFAULT_URL),
-        "stripe_portal_url": get_config("stripe_portal_url", ""),
+        "stripe_portal_url": get_config("stripe_portal_url", STRIPE_DEFAULT_PORTAL_URL),
     }
 
 @app.post("/admin/config")
