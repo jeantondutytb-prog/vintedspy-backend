@@ -1,5 +1,5 @@
 """
-VintedSpy — Main
+Trakr — Main
 Lance le scraper, stocke en base, affiche les opportunités scorées.
 """
 import asyncio, httpx, json, time

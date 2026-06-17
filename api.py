@@ -1,5 +1,5 @@
 """
-VintedSpy — API FastAPI
+Trakr — API FastAPI
 """
 from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +11,7 @@ from pathlib import Path
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 sys.path.insert(0, str(Path(__file__).parent))
 
-app = FastAPI(title="VintedSpy API", version="1.0.0")
+app = FastAPI(title="Trakr API", version="1.0.0")
 
 ALLOWED_ORIGINS = [
     "https://trakx.fr",
@@ -89,7 +89,7 @@ def on_startup():
 
 @app.get("/")
 def root():
-    return {"status": "ok", "app": "VintedSpy API"}
+    return {"status": "ok", "app": "Trakr API"}
 
 @app.get("/opportunites")
 def opportunites(limit: int = Query(20, ge=1, le=100)):

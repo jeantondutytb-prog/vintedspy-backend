@@ -1,5 +1,5 @@
 """
-VintedSpy — Scheduler global
+Trakr — Scheduler global
 Scrape tout Vinted (newest_first, sans filtre) et s'arrête
 dès qu'on retombe sur des annonces déjà connues.
 Intervalle : 20 minutes par défaut.
@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
-log_path = Path("/tmp/vintedspy.log") if not (Path.home() / "Downloads").exists() else Path.home() / "Downloads" / "vintedspy.log"
+log_path = Path("/tmp/trakr.log") if not (Path.home() / "Downloads").exists() else Path.home() / "Downloads" / "trakr.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(message)s",
