@@ -332,6 +332,29 @@ async def surveillance_remove(annonce_id: int, user: dict = Depends(get_subscrib
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+STRIPE_DEFAULT_PRICE = "9,90€/mois"
+STRIPE_DEFAULT_URL = "https://buy.stripe.com/00w8wOcJObg0fIw422c7u00"
+
+@app.get("/config")
+def config_get():
+    from database import get_config
+    return {
+        "price_display": get_config("price_display", STRIPE_DEFAULT_PRICE),
+        "stripe_url": get_config("stripe_url", STRIPE_DEFAULT_URL),
+    }
+
+@app.post("/admin/config")
+async def config_set(payload: dict, user: dict = Depends(get_current_user)):
+    admin_emails = {e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+    if user.get("email") not in admin_emails:
+        raise HTTPException(status_code=403, detail="Admin requis")
+    from database import set_config
+    allowed = {"price_display", "stripe_url"}
+    for k, v in payload.items():
+        if k in allowed:
+            set_config(k, str(v))
+    return {"ok": True}
+
 @app.get("/ping")
 def ping():
     try:

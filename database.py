@@ -99,6 +99,7 @@ def init_db():
         try:
             conn.run("CREATE INDEX IF NOT EXISTS idx_sub_email ON subscriptions(user_email)")
         except: pass
+        conn.run("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
     else:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS annonces (
@@ -154,6 +155,10 @@ def init_db():
                 current_period_end TEXT,
                 updated_le TEXT)""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sub_email ON subscriptions(user_email)")
+            conn.commit()
+        except: pass
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
             conn.commit()
         except: pass
     log.info(f"DB initialisée ({mode})")
@@ -599,6 +604,26 @@ def get_subscription(user_email: str) -> dict | None:
         return dict(zip(cols, rows[0]))
     row = conn.execute("SELECT user_email,stripe_customer_id,stripe_subscription_id,status,current_period_end FROM subscriptions WHERE user_email=?", (user_email,)).fetchone()
     return dict(row) if row else None
+
+def get_config(key: str, default: str = None) -> str:
+    conn, mode = get_conn()
+    try:
+        if mode == "pg":
+            rows = conn.run("SELECT value FROM config WHERE key=:k", k=key)
+            return rows[0][0] if rows else default
+        else:
+            row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+            return row[0] if row else default
+    except:
+        return default
+
+def set_config(key: str, value: str):
+    conn, mode = get_conn()
+    if mode == "pg":
+        conn.run("INSERT INTO config (key,value) VALUES (:k,:v) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", k=key, v=value)
+    else:
+        conn.execute("INSERT INTO config (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+        conn.commit()
 
 def is_subscribed(user_email: str) -> bool:
     sub = get_subscription(user_email)
