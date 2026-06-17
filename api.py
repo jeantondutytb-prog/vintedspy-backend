@@ -30,19 +30,36 @@ app.add_middleware(
 SUPABASE_URL = "https://apwedqsklyzroeyrokqb.supabase.co"
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "sb_publishable_ExNINsgU98WsaiqBeW0x-A_HXqQFLz1")
 
+# In-memory auth cache: token → (user_dict, expires_at)
+import time
+_auth_cache: dict = {}
+_AUTH_CACHE_TTL = 60  # seconds
+
 async def get_current_user(authorization: str = Header(None), require_sub: bool = False) -> dict:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Authentification requise")
     token = authorization.split(" ", 1)[1]
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{SUPABASE_URL}/auth/v1/user",
-            headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY},
-            timeout=10,
-        )
-    if r.status_code != 200:
-        raise HTTPException(status_code=401, detail="Session invalide ou expirée")
-    user = r.json()
+    now = time.monotonic()
+    cached = _auth_cache.get(token)
+    if cached and cached[1] > now:
+        user = cached[0]
+    else:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{SUPABASE_URL}/auth/v1/user",
+                headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY},
+                timeout=10,
+            )
+        if r.status_code != 200:
+            _auth_cache.pop(token, None)
+            raise HTTPException(status_code=401, detail="Session invalide ou expirée")
+        user = r.json()
+        _auth_cache[token] = (user, now + _AUTH_CACHE_TTL)
+        # Evict old entries to prevent memory growth
+        if len(_auth_cache) > 500:
+            oldest = sorted(_auth_cache.items(), key=lambda x: x[1][1])[:100]
+            for k, _ in oldest:
+                _auth_cache.pop(k, None)
     if require_sub:
         from database import is_subscribed
         admin_emails = {e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
