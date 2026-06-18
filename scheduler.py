@@ -156,10 +156,17 @@ async def run_niche_scans(s, cookies_str):
             qs = parse_qs(parsed.query, keep_blank_values=False)
 
             api_params = {"order": "newest_first", "per_page": PER_PAGE, "page": 1}
-            # Pass through all catalog filter params as-is
-            for key in qs:
-                val = qs[key]
-                api_params[key] = val[0] if len(val) == 1 else val
+
+            # Strip browser-only session params that expire and override filters
+            SKIP = {"search_id", "time", "page", "currency", "search_session_id", "search_correlation_id"}
+            # Map browser URL param names → Vinted API param names
+            REMAP = {"catalog[]": "catalog_ids[]", "size_ids[]": "size_ids[]", "brand_ids[]": "brand_ids[]"}
+
+            for key, val in qs.items():
+                if key in SKIP:
+                    continue
+                api_key = REMAP.get(key, key)
+                api_params[api_key] = val if len(val) > 1 else val[0]
 
             r = await s.get(
                 BASE + "/api/v2/catalog/items",
