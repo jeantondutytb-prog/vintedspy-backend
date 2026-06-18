@@ -140,14 +140,26 @@ async def feed(
         from database import get_feed_annonces
         if is_free:
             # Free plan: 20 items, prix >= 80, nb_favoris >= 20, no offset
+            effective_prix_min = max(prix_min or 0, 80)
+            effective_favs_min = max(favs_min or 0, 20)
             items = get_feed_annonces(offset=0, limit=20, marque=marque,
                                       taille=taille, score_min=score_min,
-                                      prix_min=max(prix_min or 0, 80),
+                                      prix_min=effective_prix_min,
                                       prix_max=prix_max,
                                       search=search, order=order,
                                       since_hours=since_hours,
-                                      favs_min=max(favs_min or 0, 20))
-            return {"items": items, "is_limited": True, "total_free": len(items)}
+                                      favs_min=effective_favs_min)
+            return {
+                "items": items,
+                "is_limited": True,
+                "total_free": len(items),
+                "free_constraints": {
+                    "prix_min": effective_prix_min,
+                    "favs_min": effective_favs_min,
+                    "prix_overridden": (prix_min or 0) < 80,
+                    "favs_overridden": (favs_min or 0) < 20,
+                }
+            }
         items = get_feed_annonces(offset=offset, limit=limit, marque=marque,
                                   taille=taille, score_min=score_min,
                                   prix_min=prix_min, prix_max=prix_max,

@@ -280,8 +280,11 @@ def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, or
             for i, m in enumerate(marques):
                 kwargs[f"marque{i}"] = m.lower()
         if taille:
-            conditions.append("LOWER(taille) = :taille")
-            kwargs["taille"] = taille.lower()
+            # Match "S" exactly AND Vinted composite format "S / 36 / 8"
+            t = taille.lower()
+            conditions.append("(LOWER(taille) = :taille OR LOWER(taille) LIKE :taille_prefix)")
+            kwargs["taille"] = t
+            kwargs["taille_prefix"] = t + " / %"
         if prix_min is not None:
             conditions.append("prix >= :prix_min")
             kwargs["prix_min"] = prix_min
@@ -310,8 +313,9 @@ def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, or
             conditions.append(f"LOWER(marque) IN ({placeholders})")
             params.extend(m.lower() for m in marques)
         if taille:
-            conditions.append("LOWER(taille) = ?")
-            params.append(taille.lower())
+            t = taille.lower()
+            conditions.append("(LOWER(taille) = ? OR LOWER(taille) LIKE ?)")
+            params.extend([t, t + " / %"])
         if prix_min is not None:
             conditions.append("prix >= ?")
             params.append(prix_min)
