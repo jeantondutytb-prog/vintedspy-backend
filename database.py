@@ -433,31 +433,6 @@ def _build_where(mode, marque, taille, prix_min, recherche):
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     return where, params, kwargs
 
-def _count_matching(conn, mode, marque, taille, prix_min, recherche=None):
-    where, params, kwargs = _build_where(mode, marque, taille, prix_min, recherche)
-    q = f"SELECT COUNT(*) FROM annonces {where}"
-    if mode == "pg":
-        return conn.run(q, **kwargs)[0][0]
-    return conn.execute(q, params).fetchone()[0]
-
-def _stats_matching(conn, mode, marque, taille, prix_min, recherche=None):
-    """Return aggregate stats for annonces matching niche filters."""
-    where, params, kwargs = _build_where(mode, marque, taille, prix_min, recherche)
-    q = f"SELECT COUNT(*), AVG(prix), MIN(prix), MAX(prix), AVG(nb_favoris) FROM annonces {where}"
-    if mode == "pg":
-        row = conn.run(q, **kwargs)
-    else:
-        row = conn.execute(q, params).fetchall()
-    r = row[0] if row else (0, None, None, None, None)
-    def fmt(v): return round(float(v), 2) if v is not None else None
-    return {
-        "nb_annonces": int(r[0] or 0),
-        "prix_moyen": fmt(r[1]),
-        "prix_min_val": fmt(r[2]),
-        "prix_max_val": fmt(r[3]),
-        "favoris_moyen": fmt(r[4]),
-    }
-
 def create_user_niche(user_id: str, nom: str, marque: str = None, taille: str = None,
                        score_min: int = None, prix_min: float = None, recherche: str = None,
                        lien: str = None) -> dict:
