@@ -124,15 +124,36 @@ async def feed(
     order: str = Query("recent"),
     since_hours: int = Query(None, ge=1, le=168),
     favs_min: int = Query(None, ge=0),
-    user: dict = Depends(get_subscribed_user),
+    authorization: str = Header(None),
 ):
+    # Try to get user — free plan allowed, subscription not required
+    user = None
+    if authorization:
+        try:
+            user = await get_current_user(authorization=authorization)
+        except Exception:
+            pass
+
+    is_free = not user or not _is_subscribed(user)
+
     try:
         from database import get_feed_annonces
-        return get_feed_annonces(offset=offset, limit=limit, marque=marque,
+        if is_free:
+            # Free plan: 20 items, prix >= 80, nb_favoris >= 20, no offset
+            items = get_feed_annonces(offset=0, limit=20, marque=marque,
+                                      taille=taille, score_min=score_min,
+                                      prix_min=max(prix_min or 0, 80),
+                                      prix_max=prix_max,
+                                      search=search, order=order,
+                                      since_hours=since_hours,
+                                      favs_min=max(favs_min or 0, 20))
+            return {"items": items, "is_limited": True, "total_free": len(items)}
+        items = get_feed_annonces(offset=offset, limit=limit, marque=marque,
                                   taille=taille, score_min=score_min,
                                   prix_min=prix_min, prix_max=prix_max,
                                   search=search, order=order, since_hours=since_hours,
                                   favs_min=favs_min)
+        return {"items": items, "is_limited": False}
     except Exception as e:
         log.error(f"feed: {e}")
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
