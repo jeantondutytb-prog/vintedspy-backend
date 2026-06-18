@@ -107,6 +107,19 @@ def init_db():
             conn.run("CREATE INDEX IF NOT EXISTS idx_sub_email ON subscriptions(user_email)")
         except: pass
         conn.run("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
+        # Performance indexes for /feed endpoint
+        try:
+            conn.run("CREATE INDEX IF NOT EXISTS idx_annonces_scraped ON annonces(scraped_le DESC)")
+        except: pass
+        try:
+            conn.run("CREATE INDEX IF NOT EXISTS idx_annonces_prix ON annonces(prix)")
+        except: pass
+        try:
+            conn.run("CREATE INDEX IF NOT EXISTS idx_annonces_favs ON annonces(nb_favoris DESC)")
+        except: pass
+        try:
+            conn.run("CREATE INDEX IF NOT EXISTS idx_annonces_marque ON annonces(LOWER(marque))")
+        except: pass
     else:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS annonces (
@@ -454,18 +467,33 @@ def create_user_niche(user_id: str, nom: str, marque: str = None, taille: str = 
             "created_le": now, "nb_annonces": 0}
 
 
+NICHE_ITEM_LIMITS = {"starter": 1000, "pro": 3000, "expert": 5000}
+
 def get_active_niches() -> list[dict]:
-    """Return all niches that have a Vinted link (for the worker to scan)."""
+    """Return all niches with their owner's plan (for the worker to enforce item limits)."""
     conn, mode = get_conn()
     if mode == "pg":
-        rows = conn.run("SELECT id, nom, lien FROM niches WHERE lien IS NOT NULL AND lien != ''")
-        return [{"id": r[0], "nom": r[1], "lien": r[2]} for r in rows]
-    rows = conn.execute("SELECT id, nom, lien FROM niches WHERE lien IS NOT NULL AND lien != ''").fetchall()
+        rows = conn.run("""
+            SELECT n.id, n.nom, n.lien, n.user_id,
+                   COALESCE(s.plan, 'starter') AS plan
+            FROM niches n
+            LEFT JOIN subscriptions s ON LOWER(s.user_email) = LOWER(n.user_id)
+            WHERE n.lien IS NOT NULL AND n.lien != ''
+              AND (s.status = 'active' OR n.user_id IN (SELECT user_id FROM niches WHERE true))
+        """)
+        return [{"id": r[0], "nom": r[1], "lien": r[2], "user_id": r[3], "plan": r[4]} for r in rows]
+    rows = conn.execute("""
+        SELECT n.id, n.nom, n.lien, n.user_id,
+               COALESCE(s.plan, 'starter') AS plan
+        FROM niches n
+        LEFT JOIN subscriptions s ON LOWER(s.user_email) = LOWER(n.user_id)
+        WHERE n.lien IS NOT NULL AND n.lien != ''
+    """).fetchall()
     return [dict(r) for r in rows]
 
 
-def upsert_niche_items(niche_id: int, items: list[dict]):
-    """Insert new items; update last_seen for existing ones."""
+def upsert_niche_items(niche_id: int, items: list[dict], max_items: int = None):
+    """Insert new items; update last_seen for existing ones. Prune to max_items if set."""
     conn, mode = get_conn()
     now = datetime.now().isoformat()
     for item in items:
@@ -491,6 +519,28 @@ def upsert_niche_items(niche_id: int, items: list[dict]):
                 conn.commit()
         except Exception as e:
             log.error(f"upsert_niche_items {item.get('id')}: {e}")
+    # Enforce plan item limit: delete oldest sold items first, then oldest unsold
+    if max_items is not None:
+        try:
+            if mode == "pg":
+                count = conn.run("SELECT COUNT(*) FROM niche_items WHERE niche_id=:nid", nid=niche_id)[0][0]
+                if count > max_items:
+                    excess = count - max_items
+                    conn.run("""DELETE FROM niche_items WHERE id IN (
+                        SELECT id FROM niche_items WHERE niche_id=:nid
+                        ORDER BY sold_at NULLS LAST, first_seen ASC LIMIT :excess
+                    )""", nid=niche_id, excess=excess)
+            else:
+                count = conn.execute("SELECT COUNT(*) FROM niche_items WHERE niche_id=?", (niche_id,)).fetchone()[0]
+                if count > max_items:
+                    excess = count - max_items
+                    conn.execute("""DELETE FROM niche_items WHERE id IN (
+                        SELECT id FROM niche_items WHERE niche_id=?
+                        ORDER BY CASE WHEN sold_at IS NULL THEN 1 ELSE 0 END DESC, first_seen ASC LIMIT ?
+                    )""", (niche_id, excess))
+                    conn.commit()
+        except Exception as e:
+            log.error(f"upsert_niche_items trim {niche_id}: {e}")
 
 
 def mark_niche_items_sold(niche_id: int, seen_ids: list[int], scan_interval_sec: int = 1200):

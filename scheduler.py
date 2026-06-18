@@ -139,7 +139,7 @@ async def run_scan_with_session(s, cookies_str):
 async def run_niche_scans(s, cookies_str):
     """Scan each active niche for new listings."""
     from urllib.parse import urlparse, parse_qs
-    from database import get_active_niches, upsert_niche_items, mark_niche_items_sold
+    from database import get_active_niches, upsert_niche_items, mark_niche_items_sold, NICHE_ITEM_LIMITS
 
     niches = get_active_niches()
     if not niches:
@@ -191,10 +191,12 @@ async def run_niche_scans(s, cookies_str):
             items = r.json().get("items", [])
             annonces = [a for a in (parse_item(i) for i in items) if a]
             if annonces:
-                upsert_niche_items(niche_id, annonces)
+                plan = niche.get("plan", "starter")
+                max_items = NICHE_ITEM_LIMITS.get(plan, 1000)
+                upsert_niche_items(niche_id, annonces, max_items=max_items)
                 seen_ids = [a["id"] for a in annonces]
                 mark_niche_items_sold(niche_id, seen_ids, INTERVAL)
-                log.info(f"Niche {niche_id} '{niche['nom']}': {len(annonces)} items | {len(seen_ids)} vus")
+                log.info(f"Niche {niche_id} '{niche['nom']}' [{plan}/{max_items}]: {len(annonces)} items | {len(seen_ids)} vus")
         except Exception as e:
             log.error(f"Niche {niche_id}: {e}")
         await asyncio.sleep(3)

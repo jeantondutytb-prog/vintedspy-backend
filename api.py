@@ -521,6 +521,55 @@ async def admin_list_users(user: dict = Depends(get_current_user)):
     result.sort(key=lambda x: x["created_at"] or "", reverse=True)
     return result
 
+@app.get("/admin/email-export")
+async def admin_email_export(user: dict = Depends(get_current_user)):
+    """Export email list for re-engagement campaigns (CSV-compatible JSON).
+    Returns: free users (not subscribed), churned users (inactive sub), active subscribers.
+    """
+    admin_emails = {e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+    if user.get("email") not in admin_emails:
+        raise HTTPException(status_code=403, detail="Admin requis")
+    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not service_key:
+        raise HTTPException(status_code=500, detail="SUPABASE_SERVICE_ROLE_KEY manquant dans Render env vars")
+    from database import get_subscription
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/auth/v1/admin/users?per_page=1000",
+            headers={"Authorization": f"Bearer {service_key}", "apikey": service_key},
+            timeout=20,
+        )
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Supabase error {r.status_code}")
+    supabase_users = r.json().get("users", [])
+    free_users, churned_users, active_users = [], [], []
+    for u in supabase_users:
+        email = u.get("email", "")
+        if not email:
+            continue
+        sub = get_subscription(email)
+        record = {
+            "email": email,
+            "created_at": u.get("created_at", ""),
+            "last_sign_in": u.get("last_sign_in_at", ""),
+            "plan": sub.get("plan") if sub and sub.get("status") == "active" else "free",
+            "sub_status": sub.get("status") if sub else None,
+        }
+        if not sub or sub.get("status") != "active":
+            if sub and sub.get("status") == "inactive":
+                churned_users.append(record)
+            else:
+                free_users.append(record)
+        else:
+            active_users.append(record)
+    return {
+        "total": len(supabase_users),
+        "free": {"count": len(free_users), "users": free_users},
+        "churned": {"count": len(churned_users), "users": churned_users},
+        "active": {"count": len(active_users), "users": active_users},
+    }
+
+
 @app.get("/ping")
 def ping():
     try:
