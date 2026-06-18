@@ -170,9 +170,11 @@ def _get_plan(user: dict) -> str:
 def _plan_to_amount(amount_cents: int) -> str:
     if amount_cents >= 3990:
         return "expert"
-    if amount_cents >= 990:
+    if amount_cents >= 1990:
         return "pro"
-    return "starter"
+    if amount_cents >= 990:
+        return "starter"
+    return "free"
 
 @app.get("/me")
 async def me(user: dict = Depends(get_current_user)):
@@ -227,13 +229,29 @@ async def stripe_webhook(request: Request):
 
     if etype == "checkout.session.completed":
         email = obj.get("customer_email") or obj.get("customer_details", {}).get("email")
+        subscription_id = obj.get("subscription")
+        plan = "starter"
+        if subscription_id:
+            try:
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"https://api.stripe.com/v1/subscriptions/{subscription_id}",
+                        headers={"Authorization": f"Bearer {os.getenv('STRIPE_SECRET_KEY', '')}"},
+                        timeout=10,
+                    )
+                if r.status_code == 200:
+                    plan = _plan_from_sub_obj(r.json())
+            except Exception:
+                pass
         if email:
             upsert_subscription(
                 user_email=email,
                 stripe_customer_id=obj.get("customer"),
-                stripe_subscription_id=obj.get("subscription"),
+                stripe_subscription_id=subscription_id,
                 status="active",
+                plan=plan,
             )
+            log.info(f"checkout.session.completed: {email} → {plan}")
 
     elif etype in ("customer.subscription.updated", "customer.subscription.created"):
         status = "active" if obj.get("status") in ("active", "trialing") else "inactive"
