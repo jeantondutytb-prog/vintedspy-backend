@@ -485,6 +485,39 @@ async def admin_grant(payload: dict, user: dict = Depends(get_current_user)):
     log.info(f"admin/grant: {email} → {plan} ({status})")
     return {"ok": True, "email": email, "plan": plan, "status": status}
 
+@app.get("/admin/users")
+async def admin_list_users(user: dict = Depends(get_current_user)):
+    """List all Supabase auth users with their subscription status."""
+    admin_emails = {e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+    if user.get("email") not in admin_emails:
+        raise HTTPException(status_code=403, detail="Admin requis")
+    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not service_key:
+        raise HTTPException(status_code=500, detail="SUPABASE_SERVICE_ROLE_KEY manquant dans Render env vars")
+    from database import get_subscription
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/auth/v1/admin/users?per_page=200",
+            headers={"Authorization": f"Bearer {service_key}", "apikey": service_key},
+            timeout=15,
+        )
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Supabase error {r.status_code}: {r.text[:200]}")
+    supabase_users = r.json().get("users", [])
+    result = []
+    for u in supabase_users:
+        email = u.get("email", "")
+        sub = get_subscription(email)
+        result.append({
+            "email": email,
+            "created_at": u.get("created_at"),
+            "last_sign_in": u.get("last_sign_in_at"),
+            "plan": sub.get("plan") if sub and sub.get("status") == "active" else "free",
+            "subscribed": bool(sub and sub.get("status") == "active"),
+        })
+    result.sort(key=lambda x: x["created_at"] or "", reverse=True)
+    return result
+
 @app.get("/ping")
 def ping():
     try:
