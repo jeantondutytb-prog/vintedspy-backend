@@ -433,6 +433,35 @@ async def niches_create(payload: NichePayload, user: dict = Depends(get_subscrib
         log.error(f"niches_create: {e}")
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
 
+class NicheUpdatePayload(BaseModel):
+    nom: str = None
+    lien: str = None
+    marque: str = None
+    taille: str = None
+    score_min: int = None
+    prix_min: float = None
+    recherche: str = None
+
+@app.patch("/niches/{niche_id}")
+async def niches_update(niche_id: int, payload: NicheUpdatePayload, user: dict = Depends(get_subscribed_user)):
+    try:
+        from database import update_user_niche
+        nom = payload.nom.strip() if payload.nom else None
+        if payload.nom is not None and not nom:
+            return JSONResponse(status_code=400, content={"error": "Nom requis"})
+        ok = update_user_niche(
+            user["id"], niche_id, nom=nom,
+            marque=payload.marque, taille=payload.taille,
+            score_min=payload.score_min, prix_min=payload.prix_min,
+            recherche=payload.recherche, lien=payload.lien,
+        )
+        if not ok:
+            return JSONResponse(status_code=404, content={"error": "Tracker introuvable"})
+        return {"ok": True}
+    except Exception as e:
+        log.error(f"niches_update: {e}")
+        return JSONResponse(status_code=500, content={"error": "Erreur interne"})
+
 @app.get("/niches/{niche_id}/items")
 async def niches_items(niche_id: int, limit: int = Query(100, ge=1, le=500), user: dict = Depends(get_subscribed_user)):
     try:

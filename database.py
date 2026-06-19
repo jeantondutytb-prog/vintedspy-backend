@@ -475,6 +475,26 @@ def create_user_niche(user_id: str, nom: str, marque: str = None, taille: str = 
             "created_le": now, "nb_annonces": 0}
 
 
+def update_user_niche(user_id: str, niche_id: int, nom: str = None, marque: str = None, taille: str = None,
+                       score_min: int = None, prix_min: float = None, recherche: str = None,
+                       lien: str = None) -> bool:
+    """Update fields on a niche owned by user_id. Only non-None fields are updated. Returns False if not found/owned."""
+    fields = {"nom": nom, "marque": marque, "taille": taille, "score_min": score_min,
+              "prix_min": prix_min, "recherche": recherche, "lien": lien}
+    fields = {k: v for k, v in fields.items() if v is not None}
+    if not fields:
+        return True
+    conn, mode = get_conn()
+    if mode == "pg":
+        set_clause = ", ".join(f"{k}=:{k}" for k in fields)
+        conn.run(f"UPDATE niches SET {set_clause} WHERE id=:id AND user_id=:u", id=niche_id, u=user_id, **fields)
+        return conn.row_count > 0
+    set_clause = ", ".join(f"{k}=?" for k in fields)
+    conn.execute(f"UPDATE niches SET {set_clause} WHERE id=? AND user_id=?", (*fields.values(), niche_id, user_id))
+    conn.commit()
+    return conn.execute("SELECT changes()").fetchone()[0] > 0
+
+
 NICHE_ITEM_LIMITS = {"starter": 1000, "pro": 3000, "expert": 5000}
 
 def get_active_niches() -> list[dict]:
