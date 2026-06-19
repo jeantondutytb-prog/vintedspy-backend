@@ -190,6 +190,30 @@ async def vinted_brand(brand_id: int, user: dict = Depends(get_subscribed_user))
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
 
 
+@app.get("/vinted/item/{item_id}")
+async def vinted_item(item_id: int, user: dict = Depends(get_subscribed_user)):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+        "Accept": "application/json",
+        "Accept-Language": "fr-FR,fr;q=0.9",
+    }
+    try:
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=10) as client:
+            await client.get("https://www.vinted.fr/", headers={**headers, "Accept": "text/html"})
+            r = await client.get(f"https://www.vinted.fr/api/v2/items/{item_id}", headers=headers)
+        if r.status_code != 200:
+            return JSONResponse(status_code=502, content={"error": "vinted_unreachable"})
+        item = r.json().get("item", {})
+        return {
+            "id": item_id,
+            "created_at": item.get("created_at_ts") or item.get("created_at", ""),
+            "user_updated_at": item.get("user_updated_at", ""),
+        }
+    except Exception as e:
+        log.error(f"vinted_item {item_id}: {e}")
+        return JSONResponse(status_code=500, content={"error": "Erreur interne"})
+
+
 NICHE_LIMITS = {"free": 0, "starter": 1, "pro": 5, "expert": None}  # None = illimité
 
 def _get_plan(user: dict) -> str:
