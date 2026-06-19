@@ -5,7 +5,7 @@ dès qu'on retombe sur des annonces déjà connues.
 Intervalle : 20 minutes par défaut.
 """
 import asyncio, httpx, logging, os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
@@ -23,6 +23,7 @@ UA       = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/6
 INTERVAL = int(os.getenv("SCAN_INTERVAL", "1200"))  # 20 minutes
 MAX_PAGES = 15   # max pages par scan (15 × 96 = ~1 440 annonces max)
 PER_PAGE  = 96   # max autorisé par Vinted
+MAX_AGE_DAYS = 30  # ignorer les annonces publiées il y a plus de 30 jours
 
 
 def parse_item(item):
@@ -53,6 +54,24 @@ async def get_cookies():
         await s.get(BASE, headers={"User-Agent": UA, "Accept-Language": "fr-FR"})
         await asyncio.sleep(2)
         return "; ".join(f"{k}={v}" for k, v in dict(s.cookies).items()), s.cookies
+
+
+def _is_recent(publie_le: str, cutoff_dt: datetime) -> bool:
+    """Retourne True si l'annonce a été publiée après cutoff_dt (anti-bump)."""
+    if not publie_le:
+        return True  # pas de date connue → on garde
+    try:
+        # Normalise vers format ISO sans offset pour fromisoformat (Python 3.10 compat)
+        s = publie_le.replace('Z', '+00:00')
+        # Tronque la partie offset si présente pour Python 3.8 compat
+        if '+' in s[10:]:
+            s = s[:s.index('+', 10)]
+        elif s[10:].count('-') > 0:
+            s = s[:s.rindex('-', 10)]
+        dt = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+        return dt >= cutoff_dt
+    except Exception:
+        return True
 
 
 def ids_already_in_db(ids: list[int]) -> set[int]:
@@ -114,13 +133,16 @@ async def run_scan_with_session(s, cookies_str):
             break
 
         page_annonces = [a for a in (parse_item(i) for i in items) if a]
+        # Filtrer les annonces trop vieilles (bumps de vieux items)
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+        page_annonces = [a for a in page_annonces if _is_recent(a.get("publie_le", ""), cutoff_dt)]
         page_ids = [a["id"] for a in page_annonces]
         known_ids = ids_already_in_db(page_ids)
         new_on_page = [a for a in page_annonces if a["id"] not in known_ids]
         toutes.extend(new_on_page)
 
         ratio_connu = len(known_ids) / max(len(page_ids), 1)
-        log.info(f"Page {page}: {len(items)} items | {len(new_on_page)} nouveaux | {len(known_ids)} déjà connus")
+        log.info(f"Page {page}: {len(items)} items | {len(new_on_page)} nouveaux | {len(known_ids)} déjà connus | filtrés trop vieux")
 
         if ratio_connu > 0.5:
             log.info("Majorité d'annonces déjà connues — scan terminé")
