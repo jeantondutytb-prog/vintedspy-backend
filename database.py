@@ -299,7 +299,7 @@ def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, or
             kwargs["search"] = f"%{search.lower()}%"
             kwargs["search2"] = f"%{search.lower()}%"
         if since_ts:
-            conditions.append("scraped_le >= :since_ts")
+            conditions.append("(publie_le >= :since_ts AND publie_le != '')")
             kwargs["since_ts"] = since_ts
         if favs_min is not None:
             conditions.append("nb_favoris >= :favs_min")
@@ -329,7 +329,7 @@ def _fetch_feed_rows(conn, mode, marques, taille, prix_min, prix_max, search, or
             conditions.append("(LOWER(titre) LIKE ? OR LOWER(marque) LIKE ?)")
             params.extend([f"%{search.lower()}%", f"%{search.lower()}%"])
         if since_ts:
-            conditions.append("scraped_le >= ?")
+            conditions.append("(publie_le >= ? AND publie_le != '')")
             params.append(since_ts)
         if favs_min is not None:
             conditions.append("nb_favoris >= ?")
