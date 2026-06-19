@@ -192,23 +192,28 @@ async def vinted_brand(brand_id: int, user: dict = Depends(get_subscribed_user))
 
 @app.get("/vinted/item/{item_id}")
 async def vinted_item(item_id: int, user: dict = Depends(get_subscribed_user)):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
-        "Accept": "application/json",
-        "Accept-Language": "fr-FR,fr;q=0.9",
-    }
+    from datetime import timezone
+    ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148"
     try:
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=10) as client:
-            await client.get("https://www.vinted.fr/", headers={**headers, "Accept": "text/html"})
-            r = await client.get(f"https://www.vinted.fr/api/v2/items/{item_id}", headers=headers)
+        async with httpx.AsyncClient(follow_redirects=True, timeout=12) as client:
+            # Get session cookies first
+            await client.get("https://www.vinted.fr/", headers={"User-Agent": ua, "Accept-Language": "fr-FR,fr;q=0.9"})
+            r = await client.get(
+                f"https://www.vinted.fr/api/v2/items/{item_id}",
+                headers={"User-Agent": ua, "Accept": "application/json", "Accept-Language": "fr-FR,fr;q=0.9"},
+            )
         if r.status_code != 200:
+            log.warning(f"vinted_item {item_id}: HTTP {r.status_code}")
             return JSONResponse(status_code=502, content={"error": "vinted_unreachable"})
         item = r.json().get("item", {})
-        return {
-            "id": item_id,
-            "created_at": item.get("created_at_ts") or item.get("created_at", ""),
-            "user_updated_at": item.get("user_updated_at", ""),
-        }
+        # created_at_ts is Unix timestamp (seconds), created_at is ISO string
+        ts = item.get("created_at_ts")
+        if ts:
+            created_at = datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+        else:
+            created_at = item.get("created_at", "")
+        log.info(f"vinted_item {item_id}: created_at={created_at}")
+        return {"id": item_id, "created_at": created_at}
     except Exception as e:
         log.error(f"vinted_item {item_id}: {e}")
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
