@@ -87,6 +87,13 @@ def on_startup():
         init_db()
     except Exception as e:
         print(f"init_db failed: {e}")
+    try:
+        from datetime import datetime, timezone
+        from database import get_config, set_config
+        if not get_config("onboarding_launch_at"):
+            set_config("onboarding_launch_at", datetime.now(timezone.utc).isoformat())
+    except Exception as e:
+        print(f"onboarding_launch_at init failed: {e}")
 
 @app.get("/")
 def root():
@@ -238,6 +245,23 @@ def _plan_to_amount(amount_cents: int) -> str:
         return "starter"
     return "free"
 
+def _is_account_new(user: dict) -> bool:
+    """True if this account was created after the onboarding feature launched."""
+    created_at = user.get("created_at")
+    if not created_at:
+        return False
+    try:
+        from datetime import datetime
+        from database import get_config
+        launch_at = get_config("onboarding_launch_at")
+        if not launch_at:
+            return False
+        created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        launch_dt = datetime.fromisoformat(launch_at.replace("Z", "+00:00"))
+        return created_dt > launch_dt
+    except Exception:
+        return False
+
 @app.get("/me")
 async def me(user: dict = Depends(get_current_user)):
     email = user.get("email", "")
@@ -246,10 +270,11 @@ async def me(user: dict = Depends(get_current_user)):
     subscribed = _is_subscribed(user)
     plan = _get_plan(user)
     niche_limit = NICHE_LIMITS.get(plan)
-    from database import get_subscription, _trial_active
+    from database import get_subscription, _trial_active, has_completed_onboarding
     sub = get_subscription(email)
     is_trial = bool(sub and _trial_active(sub))
     trial_expires_at = sub.get("trial_expires_at") if sub else None
+    show_onboarding = _is_account_new(user) and not has_completed_onboarding(email)
     return {
         "id": user.get("id"),
         "email": email,
@@ -259,6 +284,30 @@ async def me(user: dict = Depends(get_current_user)):
         "is_admin": is_admin,
         "is_trial": is_trial,
         "trial_expires_at": trial_expires_at if is_trial else None,
+        "show_onboarding": show_onboarding,
+    }
+
+class OnboardingAnswersPayload(BaseModel):
+    q1: str
+    q2: str
+    q3: str
+    q4: str
+
+@app.post("/onboarding/answers")
+async def onboarding_answers(payload: OnboardingAnswersPayload, user: dict = Depends(get_current_user)):
+    """Save onboarding answers and grant the 24h Expert trial. Never hard-fails the trial grant."""
+    email = user.get("email", "")
+    from database import save_onboarding_answers, start_trial
+    try:
+        save_onboarding_answers(email, payload.q1, payload.q2, payload.q3, payload.q4)
+    except Exception as e:
+        log.error(f"onboarding_answers save failed: {e}")
+        return JSONResponse(status_code=500, content={"error": "Erreur interne"})
+    trial_result = start_trial(email)
+    return {
+        "ok": True,
+        "trial_started": trial_result.get("ok", False),
+        "trial_expires_at": trial_result.get("trial_expires_at"),
     }
 
 @app.post("/trial/start")

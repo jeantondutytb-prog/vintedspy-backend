@@ -110,6 +110,10 @@ def init_db():
             conn.run("CREATE INDEX IF NOT EXISTS idx_sub_email ON subscriptions(user_email)")
         except: pass
         conn.run("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
+        conn.run("""CREATE TABLE IF NOT EXISTS onboarding_answers (
+            user_email TEXT PRIMARY KEY,
+            q1_anciennete TEXT, q2_categorie TEXT, q3_temps_semaine TEXT, q4_objectif TEXT,
+            completed_le TEXT)""")
         # Performance indexes for /feed endpoint
         try:
             conn.run("CREATE INDEX IF NOT EXISTS idx_annonces_scraped ON annonces(scraped_le DESC)")
@@ -190,6 +194,17 @@ def init_db():
         except: pass
         try:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN plan TEXT DEFAULT 'starter'")
+            conn.commit()
+        except: pass
+        try:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN trial_expires_at TEXT")
+            conn.commit()
+        except: pass
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS onboarding_answers (
+                user_email TEXT PRIMARY KEY,
+                q1_anciennete TEXT, q2_categorie TEXT, q3_temps_semaine TEXT, q4_objectif TEXT,
+                completed_le TEXT)""")
             conn.commit()
         except: pass
     log.info(f"DB initialisée ({mode})")
@@ -781,6 +796,35 @@ def start_trial(user_email: str) -> dict:
         conn.commit()
     log.info(f"Trial started: {user_email} → expert until {expires}")
     return {"ok": True, "trial_expires_at": expires}
+
+def has_completed_onboarding(user_email: str) -> bool:
+    conn, mode = get_conn()
+    if mode == "pg":
+        rows = conn.run("SELECT 1 FROM onboarding_answers WHERE user_email=:e", e=user_email)
+        return bool(rows)
+    row = conn.execute("SELECT 1 FROM onboarding_answers WHERE user_email=?", (user_email,)).fetchone()
+    return row is not None
+
+def save_onboarding_answers(user_email: str, q1: str, q2: str, q3: str, q4: str) -> None:
+    conn, mode = get_conn()
+    now = datetime.now().isoformat()
+    if mode == "pg":
+        conn.run("""INSERT INTO onboarding_answers (user_email, q1_anciennete, q2_categorie, q3_temps_semaine, q4_objectif, completed_le)
+            VALUES (:e, :q1, :q2, :q3, :q4, :now)
+            ON CONFLICT (user_email) DO UPDATE SET
+                q1_anciennete=EXCLUDED.q1_anciennete, q2_categorie=EXCLUDED.q2_categorie,
+                q3_temps_semaine=EXCLUDED.q3_temps_semaine, q4_objectif=EXCLUDED.q4_objectif,
+                completed_le=EXCLUDED.completed_le""",
+            e=user_email, q1=q1, q2=q2, q3=q3, q4=q4, now=now)
+    else:
+        conn.execute("""INSERT INTO onboarding_answers (user_email, q1_anciennete, q2_categorie, q3_temps_semaine, q4_objectif, completed_le)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_email) DO UPDATE SET
+                q1_anciennete=excluded.q1_anciennete, q2_categorie=excluded.q2_categorie,
+                q3_temps_semaine=excluded.q3_temps_semaine, q4_objectif=excluded.q4_objectif,
+                completed_le=excluded.completed_le""",
+            (user_email, q1, q2, q3, q4, now))
+        conn.commit()
 
 def upsert_subscription(user_email: str, stripe_customer_id: str = None,
                          stripe_subscription_id: str = None, status: str = "active",
