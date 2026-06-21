@@ -622,6 +622,102 @@ def get_niche_items(niche_id: int, limit: int = 100) -> list[dict]:
         (niche_id, limit)).fetchall()
     return [dict(r) for r in rows]
 
+def get_niche_stats(niche_id: int) -> dict:
+    """Statistiques agrégées d'un tracker : taux de vente, temps de vente,
+    quartiles de prix de vente, rythme d'ajouts/ventes. Calculé en SQL pour
+    rester performant même avec plusieurs milliers d'items."""
+    conn, mode = get_conn()
+    if mode == "pg":
+        row = conn.run("""
+            SELECT
+                COUNT(*),
+                COUNT(sold_at),
+                AVG(CASE WHEN sold_at IS NOT NULL THEN prix END),
+                AVG(CASE WHEN sold_at IS NOT NULL
+                    THEN EXTRACT(EPOCH FROM (sold_at::timestamptz - first_seen::timestamptz)) END),
+                MIN(first_seen)
+            FROM niche_items WHERE niche_id=:nid
+        """, nid=niche_id)[0]
+        nb_items, nb_vendus, prix_moyen_vente, temps_vente_sec, premiere_le = row
+        prow = conn.run("""
+            SELECT
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY prix),
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY prix),
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY prix)
+            FROM niche_items WHERE niche_id=:nid AND sold_at IS NOT NULL
+        """, nid=niche_id)[0]
+        p25, p50, p75 = prow
+        prices_rows = conn.run("SELECT prix FROM niche_items WHERE niche_id=:nid AND sold_at IS NOT NULL ORDER BY prix", nid=niche_id)
+        prix_ventes = [r[0] for r in prices_rows]
+        nrow = conn.run("SELECT created_le FROM niches WHERE id=:nid", nid=niche_id)
+        niche_created_le = nrow[0][0] if nrow else None
+    else:
+        cur = conn.execute("SELECT prix, first_seen, sold_at FROM niche_items WHERE niche_id=?", (niche_id,))
+        all_rows = cur.fetchall()
+        nb_items = len(all_rows)
+        sold = [r for r in all_rows if r["sold_at"]]
+        nb_vendus = len(sold)
+        prix_ventes_unsorted = [r["prix"] for r in sold]
+        prix_moyen_vente = (sum(prix_ventes_unsorted) / nb_vendus) if nb_vendus else None
+        durations = []
+        for r in sold:
+            try:
+                d = (datetime.fromisoformat(r["sold_at"]) - datetime.fromisoformat(r["first_seen"])).total_seconds()
+                durations.append(d)
+            except Exception:
+                pass
+        temps_vente_sec = (sum(durations) / len(durations)) if durations else None
+        prix_ventes = sorted(prix_ventes_unsorted)
+        def _percentile(sorted_vals, q):
+            if not sorted_vals:
+                return None
+            if len(sorted_vals) == 1:
+                return sorted_vals[0]
+            idx = q * (len(sorted_vals) - 1)
+            lo, hi = int(idx), min(int(idx) + 1, len(sorted_vals) - 1)
+            frac = idx - lo
+            return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
+        p25, p50, p75 = _percentile(prix_ventes, 0.25), _percentile(prix_ventes, 0.5), _percentile(prix_ventes, 0.75)
+        nrow = conn.execute("SELECT created_le FROM niches WHERE id=?", (niche_id,)).fetchone()
+        niche_created_le = nrow[0] if nrow else None
+        first_seens = [r["first_seen"] for r in all_rows if r["first_seen"]]
+        premiere_le = min(first_seens) if first_seens else None
+
+    if not nb_items:
+        return {
+            "nb_items": 0, "nb_vendus": 0, "pct_vente": None,
+            "prix_moyen_vente": None, "temps_vente_moyen_heures": None,
+            "ajouts_par_jour": None, "ventes_par_jour": None,
+            "quartiles": None, "prix_ventes": [],
+        }
+
+    pct_vente = round(100 * nb_vendus / nb_items, 1)
+    temps_vente_moyen_heures = round(temps_vente_sec / 3600, 1) if temps_vente_sec is not None else None
+    quartiles = {"p25": round(p25, 2), "p50": round(p50, 2), "p75": round(p75, 2)} if p25 is not None else None
+
+    days_active = 1
+    try:
+        ref = niche_created_le or premiere_le
+        if ref:
+            delta = (datetime.now() - datetime.fromisoformat(ref)).total_seconds() / 86400
+            days_active = max(1, round(delta, 2))
+    except Exception:
+        pass
+    ajouts_par_jour = round(nb_items / days_active, 1)
+    ventes_par_jour = round(nb_vendus / days_active, 1)
+
+    return {
+        "nb_items": nb_items,
+        "nb_vendus": nb_vendus,
+        "pct_vente": pct_vente,
+        "prix_moyen_vente": round(prix_moyen_vente, 2) if prix_moyen_vente is not None else None,
+        "temps_vente_moyen_heures": temps_vente_moyen_heures,
+        "ajouts_par_jour": ajouts_par_jour,
+        "ventes_par_jour": ventes_par_jour,
+        "quartiles": quartiles,
+        "prix_ventes": prix_ventes,
+    }
+
 def delete_user_niche(user_id: str, niche_id: int) -> bool:
     conn, mode = get_conn()
     if mode == "pg":

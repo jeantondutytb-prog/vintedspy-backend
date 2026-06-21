@@ -274,7 +274,13 @@ async def me(user: dict = Depends(get_current_user)):
     sub = get_subscription(email)
     is_trial = bool(sub and _trial_active(sub))
     trial_expires_at = sub.get("trial_expires_at") if sub else None
-    show_onboarding = _is_account_new(user) and not has_completed_onboarding(email)
+    is_new = _is_account_new(user)
+    has_answers = has_completed_onboarding(email)
+    show_onboarding = is_new and not has_answers
+    # The guide tour shows once answers are saved but no subscriptions row exists yet
+    # (a subscriptions row only ever gets created by completing the tour, or by a real
+    # Stripe subscription — either way, the tour has nothing left to offer).
+    show_onboarding_tour = is_new and has_answers and sub is None
     return {
         "id": user.get("id"),
         "email": email,
@@ -285,6 +291,7 @@ async def me(user: dict = Depends(get_current_user)):
         "is_trial": is_trial,
         "trial_expires_at": trial_expires_at if is_trial else None,
         "show_onboarding": show_onboarding,
+        "show_onboarding_tour": show_onboarding_tour,
     }
 
 class OnboardingAnswersPayload(BaseModel):
@@ -295,14 +302,21 @@ class OnboardingAnswersPayload(BaseModel):
 
 @app.post("/onboarding/answers")
 async def onboarding_answers(payload: OnboardingAnswersPayload, user: dict = Depends(get_current_user)):
-    """Save onboarding answers and grant the 24h Expert trial. Never hard-fails the trial grant."""
+    """Save onboarding answers. Does not grant the trial — that happens at the end of the guide tour."""
     email = user.get("email", "")
-    from database import save_onboarding_answers, start_trial
+    from database import save_onboarding_answers
     try:
         save_onboarding_answers(email, payload.q1, payload.q2, payload.q3, payload.q4)
     except Exception as e:
         log.error(f"onboarding_answers save failed: {e}")
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
+    return {"ok": True}
+
+@app.post("/onboarding/complete-tour")
+async def onboarding_complete_tour(user: dict = Depends(get_current_user)):
+    """Grant the 24h Expert trial at the end of the guide tour's reveal screen."""
+    email = user.get("email", "")
+    from database import start_trial
     trial_result = start_trial(email)
     return {
         "ok": True,
@@ -522,6 +536,18 @@ async def niches_items(niche_id: int, limit: int = Query(100, ge=1, le=500), use
         return get_niche_items(niche_id, limit=limit)
     except Exception as e:
         log.error(f"niches_items: {e}")
+        return JSONResponse(status_code=500, content={"error": "Erreur interne"})
+
+@app.get("/niches/{niche_id}/stats")
+async def niches_stats(niche_id: int, user: dict = Depends(get_subscribed_user)):
+    try:
+        from database import get_niche_stats, list_user_niches
+        user_niches = list_user_niches(user["id"])
+        if not any(n["id"] == niche_id for n in user_niches):
+            return JSONResponse(status_code=403, content={"error": "Niche introuvable"})
+        return get_niche_stats(niche_id)
+    except Exception as e:
+        log.error(f"niches_stats: {e}")
         return JSONResponse(status_code=500, content={"error": "Erreur interne"})
 
 @app.delete("/niches/{niche_id}")
